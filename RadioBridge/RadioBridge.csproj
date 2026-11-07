@@ -1,18 +1,36 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
+    <!-- v0.9: cross-platform — net10.0 zonder -windows -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>RadioBridge</AssemblyName>
     <RootNamespace>RadioBridge</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
   <ItemGroup>
-    <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="RNNoise.Net" Version="1.0.0" />
-    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
-    <PackageReference Include="Concentus" Version="2.2.2" />
+    <!-- Opus compressie (pure C#, geen native deps) -->
+    <PackageReference Include="Concentus"        Version="2.2.2" />
+    <!-- RNNoise ruis-filter -->
+    <PackageReference Include="RNNoise.Net"       Version="1.0.0" />
+    <!-- Seriële poort -->
+    <PackageReference Include="System.IO.Ports"  Version="10.0.0" />
+    <!-- Avalonia UI (cross-platform GUI) -->
+    <PackageReference Include="Avalonia"                      Version="11.2.5" />
+    <PackageReference Include="Avalonia.Desktop"              Version="11.2.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent"        Version="11.2.5" />
+    <PackageReference Include="Avalonia.Fonts.Inter"          Version="11.2.5" />
+  </ItemGroup>
+
+  <!-- Native miniaudio shim — gekopieerd naar output naast de EXE -->
+  <ItemGroup>
+    <None Include="..\native\win-x64\radiobridge_audio.dll"
+          Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\native\linux-x64\radiobridge_audio.so"
+          Condition="$([MSBuild]::IsOSPlatform('Linux'))"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -1,120 +1,90 @@
+using System;
 using System.Diagnostics;
-using System.Security.Principal;
+using System.Runtime.InteropServices;
 
 namespace RadioBridge;
 
+/// <summary>
+/// Cross-platform firewall helper.
+/// Windows: gebruikt netsh advfirewall.
+/// Linux: toont de benodigde iptables/ufw commando's in de log.
+/// </summary>
 public static class FirewallHelper
 {
-    public static bool IsAdmin()
-    {
-        using var id = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
-    }
-
     /// <summary>
-    /// Add firewall rules. If not admin, re-launch just this logic elevated via netsh directly.
+    /// Open één TCP poort in de firewall.
+    /// Gooit een Exception als het mislukt (vang op in MainWindow).
     /// </summary>
-    public static void EnsureRules(IEnumerable<int> ports, Action<string> log)
+    public static void OpenPort(int port)
     {
-        var portList = ports.ToList();
-
-        if (IsAdmin())
-        {
-            // Already admin - apply directly
-            ApplyRules(portList, log);
-            return;
-        }
-
-        // Not admin - run netsh commands elevated one by one via runas
-        bool anyFailed = false;
-        foreach (var port in portList)
-        {
-            string ruleName = $"RadioBridge TCP {port}";
-            // Delete existing first
-            RunElevated("netsh", $"advfirewall firewall delete rule name=\"{ruleName}\"");
-            // Add new rule
-            int exit = RunElevated("netsh",
-                $"advfirewall firewall add rule name=\"{ruleName}\" " +
-                $"dir=in action=allow protocol=TCP localport={port} " +
-                $"description=\"RadioBridge\"");
-            if (exit == 0)
-                log($"Firewall regel toegevoegd: TCP {port}");
-            else
-            {
-                log($"Firewall regel mislukt voor poort {port} (exit {exit})");
-                anyFailed = true;
-            }
-        }
-
-        if (!anyFailed)
-            MessageBox.Show(
-                $"Firewall regels ingesteld voor poorten:\n{string.Join("\n", portList.Select(p => $"  TCP {p}"))}",
-                "Firewall ingesteld", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            OpenPortWindows(port);
         else
-            MessageBox.Show(
-                "Niet alle firewall regels konden worden ingesteld.\n" +
-                "Probeer de applicatie als administrator uit te voeren.",
-                "Firewall waarschuwing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            OpenPortLinux(port);
     }
 
-    private static void ApplyRules(List<int> ports, Action<string> log)
+    private static void OpenPortWindows(int port)
     {
-        foreach (var port in ports)
-        {
-            string ruleName = $"RadioBridge TCP {port}";
-            RunNetsh($"advfirewall firewall delete rule name=\"{ruleName}\"");
-            int exit = RunNetsh(
-                $"advfirewall firewall add rule name=\"{ruleName}\" " +
-                $"dir=in action=allow protocol=TCP localport={port} " +
-                $"description=\"RadioBridge\"");
-            log(exit == 0
-                ? $"Firewall regel toegevoegd: TCP {port}"
-                : $"Firewall regel mislukt voor poort {port}");
-        }
-        MessageBox.Show(
-            $"Firewall regels ingesteld voor poorten:\n{string.Join("\n", ports.Select(p => $"  TCP {p}"))}",
-            "Firewall ingesteld", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        string ruleName = $"RadioBridge TCP {port}";
+
+        // Verwijder bestaande regel (negeer fouten)
+        RunCommand("netsh",
+            $"advfirewall firewall delete rule name=\"{ruleName}\"",
+            elevate: true);
+
+        // Voeg nieuwe regel toe
+        int exit = RunCommand("netsh",
+            $"advfirewall firewall add rule name=\"{ruleName}\" " +
+            $"dir=in action=allow protocol=TCP localport={port} " +
+            $"description=\"RadioBridge audio bridge\"",
+            elevate: true);
+
+        if (exit != 0)
+            throw new Exception(
+                $"netsh mislukt (exit {exit}). Probeer als administrator uit te voeren.");
     }
 
-    // Run a command elevated (UAC prompt), wait for it to finish, return exit code
-    private static int RunElevated(string exe, string args)
+    private static void OpenPortLinux(int port)
+    {
+        // Probeer ufw (Ubuntu/Debian)
+        int exit = RunCommand("ufw", $"allow {port}/tcp", elevate: false);
+        if (exit == 0) return;
+
+        // Probeer iptables als fallback
+        exit = RunCommand("iptables",
+            $"-A INPUT -p tcp --dport {port} -j ACCEPT", elevate: false);
+        if (exit == 0) return;
+
+        // Geef de handmatige commando's terug als hint
+        throw new Exception(
+            $"Geen automatische firewall tool gevonden.\n" +
+            $"Voer handmatig uit:\n" +
+            $"  sudo ufw allow {port}/tcp\n" +
+            $"  of: sudo iptables -A INPUT -p tcp --dport {port} -j ACCEPT");
+    }
+
+    private static int RunCommand(string exe, string args, bool elevate)
     {
         var psi = new ProcessStartInfo(exe, args)
         {
-            Verb            = "runas",
-            UseShellExecute = true,
-            CreateNoWindow  = true,
-            WindowStyle     = ProcessWindowStyle.Hidden,
-        };
-        try
-        {
-            using var p = Process.Start(psi);
-            if (p == null) return -1;
-            p.WaitForExit(10000);
-            return p.ExitCode;
-        }
-        catch { return -1; }
-    }
-
-    private static int RunNetsh(string args)
-    {
-        var psi = new ProcessStartInfo("netsh", args)
-        {
-            UseShellExecute        = false,
+            UseShellExecute        = elevate && RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+            Verb                   = elevate && RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                                     ? "runas" : "",
             CreateNoWindow         = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
+            RedirectStandardOutput = !elevate,
+            RedirectStandardError  = !elevate,
+            WindowStyle            = ProcessWindowStyle.Hidden,
         };
         try
         {
             using var p = Process.Start(psi);
             if (p == null) return -1;
-            p.WaitForExit(5000);
+            p.WaitForExit(10_000);
             return p.ExitCode;
         }
         catch { return -1; }
     }
 
-    // No longer needed - kept for compatibility
+    // Achterwaartse compatibiliteit
     public static bool HandleStartupArgs(string[] args) => false;
 }

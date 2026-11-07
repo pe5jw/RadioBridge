@@ -1,16 +1,31 @@
-using NAudio.Wave;
+using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RadioBridge;
 
-public record AudioPreset(string Name, int SampleRate, int BitsPerSample, int Channels, int BufferMs, int PlaybackLatencyMs, bool UseOpus = false, int OpusBitrate = 0)
+// ── AudioPreset ───────────────────────────────────────────────────────────────
+
+public record AudioPreset(
+    string Name,
+    int    SampleRate,
+    int    BitsPerSample,
+    int    Channels,
+    int    BufferMs,
+    int    PlaybackLatencyMs,
+    bool   UseOpus    = false,
+    int    OpusBitrate = 0)
 {
-    public WaveFormat ToWaveFormat() => new WaveFormat(SampleRate, BitsPerSample, Channels);
     public override string ToString() => Name;
 }
+
+// ── AudioPresets ──────────────────────────────────────────────────────────────
 
 public static class AudioPresets
 {
@@ -23,34 +38,26 @@ public static class AudioPresets
         new("PCM  SSB stereo  — 48kHz 16bit stereo 20ms  ~1.5 Mbps",  48000, 16, 2,  20,  40),
 
         // ── Opus presets ─────────────────────────────────────────────────────
-        // 8kHz mono (narrowband) — smalste bandbreedte
         new("Opus Telefoon    —  8kHz mono   20ms    6 kbps",   8000, 16, 1,  20,  40, true,  6000),
         new("Opus Telefoon    —  8kHz mono   20ms   12 kbps",   8000, 16, 1,  20,  40, true, 12000),
-
-        // 16kHz mono (wideband) — goed voor SSB spraak
         new("Opus Spraak      — 16kHz mono   20ms   12 kbps",  16000, 16, 1,  20,  40, true, 12000),
         new("Opus Spraak      — 16kHz mono   20ms   24 kbps",  16000, 16, 1,  20,  40, true, 24000),
-
-        // 48kHz mono — SSB/digimode
         new("Opus SSB mono    — 48kHz mono   20ms   24 kbps",  48000, 16, 1,  20,  40, true, 24000),
         new("Opus SSB mono    — 48kHz mono   20ms   32 kbps",  48000, 16, 1,  20,  40, true, 32000),
         new("Opus SSB mono    — 48kHz mono   20ms   64 kbps",  48000, 16, 1,  20,  40, true, 64000),
         new("Opus SSB mono    — 48kHz mono   10ms   32 kbps",  48000, 16, 1,  10,  20, true, 32000),
-
-        // 48kHz stereo
         new("Opus SSB stereo  — 48kHz stereo 20ms   64 kbps",  48000, 16, 2,  20,  40, true, 64000),
         new("Opus SSB stereo  — 48kHz stereo 20ms  128 kbps",  48000, 16, 2,  20,  40, true,128000),
-
-        // RNNoise compatible (48kHz mono) — met neurale ruisfilter
         new("Opus RNNoise     — 48kHz mono   20ms   32 kbps",  48000, 16, 1,  20,  40, true, 32000),
         new("Opus RNNoise     — 48kHz mono   10ms   32 kbps",  48000, 16, 1,  10,  20, true, 32000),
     ];
 
     public static AudioPreset Default => All[6]; // Opus Spraak 16kHz mono 20ms 12kbps
 
-    public static AudioPreset FindOrCreate(int sampleRate, int bits, int channels, int bufferMs, int latencyMs, bool useOpus, int opusBitrate)
+    public static AudioPreset FindOrCreate(int sampleRate, int bits, int channels,
+        int bufferMs, int latencyMs, bool useOpus, int opusBitrate)
     {
-        var match = All.FirstOrDefault(p =>
+        var match = System.Linq.Enumerable.FirstOrDefault(All, p =>
             p.SampleRate    == sampleRate &&
             p.BitsPerSample == bits &&
             p.Channels      == channels &&
@@ -58,19 +65,20 @@ public static class AudioPresets
             p.UseOpus       == useOpus &&
             p.OpusBitrate   == opusBitrate);
         return match ?? new AudioPreset(
-            $"Custom {(useOpus ? $"Opus {opusBitrate/1000}kbps" : "PCM")} {sampleRate}Hz {bits}bit {channels}ch {bufferMs}ms",
+            $"Custom {(useOpus ? $"Opus {opusBitrate/1000}kbps" : "PCM")} " +
+            $"{sampleRate}Hz {bits}bit {channels}ch {bufferMs}ms",
             sampleRate, bits, channels, bufferMs, latencyMs, useOpus, opusBitrate);
     }
 }
 
-// ── Config packet sent by client to server on connect ────────────────────────
+// ── Config types ──────────────────────────────────────────────────────────────
 
 public class SerialPortConfig
 {
-    public bool   Enabled  { get; set; }
-    public string ComPort  { get; set; } = "";
-    public int    Baud     { get; set; } = 9600;
-    public int    TcpPort  { get; set; }
+    public bool   Enabled { get; set; }
+    public string ComPort { get; set; } = "";
+    public int    Baud    { get; set; } = 9600;
+    public int    TcpPort { get; set; }
 }
 
 public class BridgeConfig
@@ -82,35 +90,45 @@ public class BridgeConfig
     public int    PlaybackLatencyMs { get; set; }
     public bool   NoiseSuppress     { get; set; }
     public string PresetName        { get; set; } = "";
-    // v0.8: Opus
     public bool   UseOpus           { get; set; }
     public int    OpusBitrate       { get; set; }
-    // Serial config from server
     public SerialPortConfig Port1   { get; set; } = new();
     public SerialPortConfig Port2   { get; set; } = new();
 }
 
-// ── Engine ───────────────────────────────────────────────────────────────────
+// ── AudioEngine (v0.9 — miniaudio cross-platform) ────────────────────────────
 
 public class AudioEngine : IDisposable
 {
-    private WaveInEvent?          _waveIn;
-    private WaveOutEvent?         _waveOut;
-    private BufferedWaveProvider? _playbackBuffer;
-    private TcpListener?          _listener;
-    private TcpClient?            _tcpClient;
-    private NetworkStream?        _stream;
+    // ── TCP / stream state ────────────────────────────────────────────────────
+    private TcpListener?   _listener;
+    private TcpClient?     _tcpClient;
+    private NetworkStream? _stream;
+
     private CancellationTokenSource _cts = new();
     private bool _running;
     private bool _disconnectFired;
-    private AudioPreset _preset = AudioPresets.Default;
+
+    // ── Audio state ───────────────────────────────────────────────────────────
+    private AudioPreset     _preset  = AudioPresets.Default;
     private readonly NoiseFilter _filter = new();
     private readonly OpusCodec   _codec  = new();
 
-    public event Action<string>?          StatusChanged;
-    public event Action<string>?          Error;
-    public event Action?                  ClientDisconnected;
-    public event Action<BridgeConfig>?    ConfigReceived;
+    // Native callbacks — must be kept alive (GC root) while audio is running
+    private MiniAudioEngine.CaptureCallback?  _captureDelegate;
+    private MiniAudioEngine.PlaybackCallback? _playbackDelegate;
+
+    // Playback ring-buffer (lock-free SPSC approximation via byte queue)
+    private readonly object _playLock  = new();
+    private readonly Queue<byte[]> _playQueue = new();
+    private const int MaxPlayQueueBytes = 192_000; // ~1 s at 48kHz 16bit mono
+    private int _playQueueBytes;
+
+    // ── Events ────────────────────────────────────────────────────────────────
+    public event Action<string>?       StatusChanged;
+    public event Action<string>?       Error;
+    public event Action?               ClientDisconnected;
+    public event Action<BridgeConfig>? ConfigReceived;
 
     public SerialPortConfig SerialConfig1 { get; set; } = new();
     public SerialPortConfig SerialConfig2 { get; set; } = new();
@@ -125,7 +143,8 @@ public class AudioEngine : IDisposable
         {
             Log($"Luisteren op TCP poort {port}...");
             _listener = new TcpListener(IPAddress.Any, port);
-            _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _listener.Server.SetSocketOption(SocketOptionLevel.Socket,
+                SocketOptionName.ReuseAddress, true);
             _listener.Start();
             _tcpClient = await _listener.AcceptTcpClientAsync(_cts.Token);
             _tcpClient.NoDelay = true;
@@ -157,7 +176,8 @@ public class AudioEngine : IDisposable
 
     // ── Client ────────────────────────────────────────────────────────────────
 
-    public async Task StartClientAsync(string host, int port, int captureIdx, int playbackIdx,
+    public async Task StartClientAsync(string host, int port,
+        int captureIdx, int playbackIdx,
         AudioPreset preset, bool noiseSuppress)
     {
         _preset = preset;
@@ -229,7 +249,7 @@ public class AudioEngine : IDisposable
         return JsonSerializer.Deserialize<BridgeConfig>(Encoding.UTF8.GetString(buf));
     }
 
-    // ── Noise toggle (live) ───────────────────────────────────────────────────
+    // ── Noise toggle ─────────────────────────────────────────────────────────
 
     public void SetNoiseSuppression(bool enabled)
     {
@@ -246,9 +266,15 @@ public class AudioEngine : IDisposable
         _cts.Cancel();
         _running = false;
 
-        try { _waveIn?.StopRecording(); } catch { }
-        try { _waveOut?.Stop(); }         catch { }
-        try { _stream?.Close(); }         catch { }
+        // Stop native audio first
+        try { MiniAudioEngine.rb_audio_stop();   } catch { }
+        try { MiniAudioEngine.rb_audio_uninit(); } catch { }
+        _captureDelegate  = null;
+        _playbackDelegate = null;
+
+        lock (_playLock) { _playQueue.Clear(); _playQueueBytes = 0; }
+
+        try { _stream?.Close(); } catch { }
         _stream = null;
 
         try
@@ -265,12 +291,8 @@ public class AudioEngine : IDisposable
         try { _listener?.Stop(); } catch { }
         _listener = null;
 
-        try { _waveIn?.Dispose(); }  catch { }
-        try { _waveOut?.Dispose(); } catch { }
-        try { _filter.Dispose(); }   catch { }
-        try { _codec.Dispose(); }    catch { }
-        _waveIn  = null;
-        _waveOut = null;
+        try { _filter.Dispose(); } catch { }
+        try { _codec.Dispose();  } catch { }
 
         _cts = new CancellationTokenSource();
         Log("Gestopt.");
@@ -278,86 +300,122 @@ public class AudioEngine : IDisposable
 
     // ── Audio setup ───────────────────────────────────────────────────────────
 
-    private void StartAudio(int captureIdx, int playbackIdx, bool noiseSuppress, bool useOpus, int opusBitrate)
+    private void StartAudio(int captureIdx, int playbackIdx,
+        bool noiseSuppress, bool useOpus, int opusBitrate)
     {
-        var fmt = _preset.ToWaveFormat();
         _filter.Initialize(noiseSuppress, _preset.SampleRate, _preset.Channels);
-        _codec.Initialize(useOpus, _preset.SampleRate, _preset.Channels, _preset.BufferMs, opusBitrate);
+        _codec.Initialize(useOpus, _preset.SampleRate, _preset.Channels,
+            _preset.BufferMs, opusBitrate);
 
-        _playbackBuffer = new BufferedWaveProvider(fmt)
-        {
-            BufferDuration          = TimeSpan.FromMilliseconds(_preset.PlaybackLatencyMs * 4),
-            DiscardOnBufferOverflow = true,
-        };
-        _waveOut = new WaveOutEvent
-        {
-            DeviceNumber   = playbackIdx,
-            DesiredLatency = _preset.PlaybackLatencyMs,
-        };
-        _waveOut.Init(_playbackBuffer);
-        _waveOut.Play();
+        // Buffer size in frames: BufferMs × SampleRate / 1000
+        int bufFrames = (_preset.SampleRate * _preset.BufferMs) / 1000;
 
-        _waveIn = new WaveInEvent
+        // Keep delegates alive (GC root) for the duration of audio streaming
+        _captureDelegate  = OnCapture;
+        _playbackDelegate = OnPlayback;
+
+        int rc = MiniAudioEngine.rb_audio_init(
+            captureIdx, playbackIdx,
+            _preset.SampleRate, _preset.Channels, bufFrames,
+            _captureDelegate, _playbackDelegate);
+
+        if (rc != 0)
         {
-            DeviceNumber       = captureIdx,
-            WaveFormat         = fmt,
-            BufferMilliseconds = _preset.BufferMs,
-        };
-        _waveIn.DataAvailable    += OnDataAvailable;
-        _waveIn.RecordingStopped += (s, e) =>
+            Error?.Invoke($"Audio init mislukt (code {rc}): {MiniAudioEngine.GetLastError()}");
+            return;
+        }
+
+        rc = MiniAudioEngine.rb_audio_start();
+        if (rc != 0)
         {
-            if (e.Exception != null) Error?.Invoke($"Opname gestopt: {e.Exception.Message}");
-        };
-        _waveIn.StartRecording();
+            Error?.Invoke($"Audio start mislukt (code {rc}): {MiniAudioEngine.GetLastError()}");
+            MiniAudioEngine.rb_audio_uninit();
+            return;
+        }
+
         _running = true;
 
         int kbps = useOpus
             ? opusBitrate / 1000
-            : (fmt.SampleRate * fmt.BitsPerSample * fmt.Channels) / 1000;
+            : (_preset.SampleRate * _preset.BitsPerSample * _preset.Channels) / 1000;
 
-        string codecInfo  = _codec.InfoString();
-        string filterInfo = noiseSuppress ? $"  ruis: {_filter.Mode}" : "  ruis: uit";
-        Log($"Audio actief  |  {fmt.SampleRate}Hz {fmt.BitsPerSample}bit {fmt.Channels}ch  " +
-            $"buf {_preset.BufferMs}ms  ~{kbps} kbps  [{codecInfo}]{filterInfo}");
+        Log($"Audio actief  |  {_preset.SampleRate}Hz {_preset.BitsPerSample}bit " +
+            $"{_preset.Channels}ch  buf {_preset.BufferMs}ms  ~{kbps} kbps  " +
+            $"[{_codec.InfoString()}]" +
+            (noiseSuppress ? $"  ruis: {_filter.Mode}" : "  ruis: uit"));
 
         _ = Task.Run(() => ReceiveLoopAsync(_cts.Token));
     }
 
-    // ── Send ─────────────────────────────────────────────────────────────────
+    // ── Capture callback (called by native audio thread) ─────────────────────
 
-    private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    private void OnCapture(IntPtr buffer, int frames)
     {
-        if (!_running || _stream == null || e.BytesRecorded == 0) return;
+        if (!_running || _stream == null) return;
         try
         {
-            // Apply noise filter first (in-place on PCM)
+            int samples = frames * _preset.Channels;
+            int byteLen = samples * 2; // 16-bit = 2 bytes per sample
+            var pcm = new short[samples];
+            Marshal.Copy(buffer, pcm, 0, samples);
+
+            // Convert to byte[] for existing filter / codec APIs
+            var bytes = new byte[byteLen];
+            Buffer.BlockCopy(pcm, 0, bytes, 0, byteLen);
+
             if (_filter.IsEnabled)
-                _filter.Process(e.Buffer, e.BytesRecorded, _preset.Channels);
+                _filter.Process(bytes, byteLen, _preset.Channels);
 
             if (_codec.IsEnabled)
             {
-                // Opus: encode to packets, send each with 2-byte length prefix
-                var packets = _codec.Encode(e.Buffer, e.BytesRecorded);
+                var packets = _codec.Encode(bytes, byteLen);
                 foreach (var packet in packets)
                 {
-                    // Use 2-byte length for Opus packets (max ~4000 bytes)
                     _stream.Write(BitConverter.GetBytes((ushort)packet.Length), 0, 2);
                     _stream.Write(packet, 0, packet.Length);
                 }
             }
             else
             {
-                // PCM: 4-byte length prefix + raw samples
-                _stream.Write(BitConverter.GetBytes(e.BytesRecorded), 0, 4);
-                _stream.Write(e.Buffer, 0, e.BytesRecorded);
+                _stream.Write(BitConverter.GetBytes(byteLen), 0, 4);
+                _stream.Write(bytes, 0, byteLen);
             }
         }
         catch (ObjectDisposedException) { _running = false; }
-        catch (IOException)             { _running = false; }
+        catch (System.IO.IOException)   { _running = false; }
         catch { }
     }
 
-    // ── Receive ──────────────────────────────────────────────────────────────
+    // ── Playback callback (called by native audio thread) ─────────────────────
+
+    private void OnPlayback(IntPtr buffer, int frames)
+    {
+        int samples  = frames * _preset.Channels;
+        int byteLen  = samples * 2;
+
+        byte[]? chunk = null;
+        lock (_playLock)
+        {
+            if (_playQueue.Count > 0)
+            {
+                chunk = _playQueue.Dequeue();
+                _playQueueBytes -= chunk.Length;
+            }
+        }
+
+        if (chunk != null && chunk.Length == byteLen)
+        {
+            Marshal.Copy(chunk, 0, buffer, byteLen);
+        }
+        else
+        {
+            // Silence
+            for (int i = 0; i < byteLen; i++)
+                Marshal.WriteByte(buffer + i, 0);
+        }
+    }
+
+    // ── Receive loop ─────────────────────────────────────────────────────────
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
@@ -385,13 +443,12 @@ public class AudioEngine : IDisposable
 
     private async Task ReceiveOpusFrameAsync(CancellationToken ct)
     {
-        // 2-byte length prefix for Opus packets
         var hdr = new byte[2];
         int r = 0;
         while (r < 2)
         {
             int n = await _stream!.ReadAsync(hdr.AsMemory(r, 2 - r), ct);
-            if (n == 0) { FireDisconnect(); throw new EndOfStreamException("Verbinding verbroken"); }
+            if (n == 0) { FireDisconnect(); throw new System.IO.EndOfStreamException("Verbinding verbroken"); }
             r += n;
         }
         int len = BitConverter.ToUInt16(hdr, 0);
@@ -402,24 +459,22 @@ public class AudioEngine : IDisposable
         while (r < len)
         {
             int n = await _stream!.ReadAsync(packet.AsMemory(r, len - r), ct);
-            if (n == 0) throw new EndOfStreamException("Verbinding verbroken");
+            if (n == 0) throw new System.IO.EndOfStreamException("Verbinding verbroken");
             r += n;
         }
 
         var pcm = _codec.Decode(packet, len);
-        if (pcm.Length > 0)
-            _playbackBuffer?.AddSamples(pcm, 0, pcm.Length);
+        if (pcm.Length > 0) EnqueuePlayback(pcm);
     }
 
     private async Task ReceivePcmFrameAsync(CancellationToken ct)
     {
-        // 4-byte length prefix for PCM frames
         var hdr = new byte[4];
         int r = 0;
         while (r < 4)
         {
             int n = await _stream!.ReadAsync(hdr.AsMemory(r, 4 - r), ct);
-            if (n == 0) { FireDisconnect(); throw new EndOfStreamException("Verbinding verbroken"); }
+            if (n == 0) { FireDisconnect(); throw new System.IO.EndOfStreamException("Verbinding verbroken"); }
             r += n;
         }
         int len = BitConverter.ToInt32(hdr, 0);
@@ -430,10 +485,28 @@ public class AudioEngine : IDisposable
         while (r < len)
         {
             int n = await _stream!.ReadAsync(buf.AsMemory(r, len - r), ct);
-            if (n == 0) throw new EndOfStreamException("Verbinding verbroken");
+            if (n == 0) throw new System.IO.EndOfStreamException("Verbinding verbroken");
             r += n;
         }
-        _playbackBuffer?.AddSamples(buf, 0, len);
+        EnqueuePlayback(buf);
+    }
+
+    private void EnqueuePlayback(byte[] data)
+    {
+        lock (_playLock)
+        {
+            if (_playQueueBytes + data.Length > MaxPlayQueueBytes)
+            {
+                // Overflow: drop oldest frame
+                if (_playQueue.Count > 0)
+                {
+                    var old = _playQueue.Dequeue();
+                    _playQueueBytes -= old.Length;
+                }
+            }
+            _playQueue.Enqueue(data);
+            _playQueueBytes += data.Length;
+        }
     }
 
     private void FireDisconnect()
@@ -446,18 +519,20 @@ public class AudioEngine : IDisposable
     public static List<(int Index, string Name)> GetCaptureDevices()
     {
         var list = new List<(int, string)>();
-        list.Add((-1, "⭐ Windows standaard opname-apparaat"));
-        for (int i = 0; i < WaveInEvent.DeviceCount; i++)
-            list.Add((i, WaveInEvent.GetCapabilities(i).ProductName));
+        list.Add((-1, "⭐ Standaard opname-apparaat"));
+        var names = MiniAudioEngine.GetDeviceNames(true);
+        for (int i = 0; i < names.Length; i++)
+            list.Add((i, names[i]));
         return list;
     }
 
     public static List<(int Index, string Name)> GetPlaybackDevices()
     {
         var list = new List<(int, string)>();
-        list.Add((-1, "⭐ Windows standaard afspeel-apparaat"));
-        for (int i = 0; i < WaveOut.DeviceCount; i++)
-            list.Add((i, WaveOut.GetCapabilities(i).ProductName));
+        list.Add((-1, "⭐ Standaard afspeel-apparaat"));
+        var names = MiniAudioEngine.GetDeviceNames(false);
+        for (int i = 0; i < names.Length; i++)
+            list.Add((i, names[i]));
         return list;
     }
 

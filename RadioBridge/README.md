@@ -1,115 +1,162 @@
-# RadioBridge v0.8 — Audio + Serieel over netwerk
+# RadioBridge v0.9
 
-2-way audio streaming én seriële poort bridging tussen twee pc's via TCP.
-Bedoeld voor remote radio bediening: audio (microfoon/speaker of VAC) én CAT/PTT over het netwerk.
-
----
-
-## Functies
-
-- **Opus compressie** — factor 10–20 minder bandbreedte t.o.v. ruwe PCM
-- **Audio bridge** — volledig duplex, instelbare kwaliteit/latency
-- **Seriële poort bridge** — 2 poorten (CAT + PTT), instelbaar baud/TCP-poort
-- **Ruisonderdrukking** — RNNoise (neuraal netwerk) bij 48kHz mono, anders noise gate
-- **PCM fallback** — ruwe PCM presets nog steeds beschikbaar
-- **Automatische firewall** — UAC-prompt voor firewall regels
-- **Server herstart automatisch** na verbroken verbinding
+**Audio over netwerk voor amateur radio** — volledige duplex TCP audio streaming  
+met Opus compressie, RNNoise ruisonderdrukking en seriële poort bridging (CAT/PTT).
 
 ---
 
-## Vereisten
+## Nieuw in v0.9
 
-- Windows 10/11
-- [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) → "Run desktop apps" → Windows x64
+| Versie | Wat veranderd |
+|--------|---------------|
+| v0.7   | Eerste release — PCM audio, WinForms, Windows only |
+| v0.8   | Opus compressie via Concentus (pure C#) |
+| **v0.9** | **Cross-platform (Windows + Linux) — miniaudio native shim, Avalonia UI** |
+
+---
+
+## Architectuur
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  C# / .NET 10 (net10.0 — geen -windows)                 │
+│  ┌────────────┐  ┌──────────────┐  ┌─────────────────┐  │
+│  │ AudioEngine│  │  OpusCodec   │  │  SerialBridge   │  │
+│  │  (TCP I/O) │  │ (Concentus)  │  │ (System.IO.Ports│  │
+│  └─────┬──────┘  └──────────────┘  └─────────────────┘  │
+│        │ P/Invoke                                        │
+│  ┌─────▼──────────────────────────────────────────────┐  │
+│  │  MiniAudioEngine.cs  (P/Invoke wrapper)            │  │
+│  └─────┬──────────────────────────────────────────────┘  │
+│        │                                                 │
+│  ┌─────▼──────────────────────────────────────────────┐  │
+│  │  radiobridge_audio.dll / .so  (C, miniaudio v0.11) │  │
+│  └────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Audio libraries:**
+- **miniaudio v0.11.26** — single-header C library, geen externe systeemafhankelijkheden
+- **Concentus 2.2.2** — pure C# Opus codec
+- **RNNoise.Net 1.0.0** — neurale ruisonderdrukking (48kHz mono)
+- **Avalonia 11.2.5** — cross-platform GUI
+
+---
+
+## Presets
+
+| Naam | Sample rate | Codec | Bitrate | Toepassing |
+|------|-------------|-------|---------|------------|
+| PCM Telefoon | 8 kHz mono | PCM | ~128 kbps | Lokaal netwerk |
+| PCM Spraak | 16 kHz mono | PCM | ~256 kbps | Lokaal netwerk |
+| PCM SSB mono | 48 kHz mono | PCM | ~768 kbps | Lokaal netwerk |
+| **Opus Telefoon** | 8 kHz mono | Opus | 6–12 kbps | Lage bandbreedte |
+| **Opus Spraak** | 16 kHz mono | Opus | 12–24 kbps | Standaard SSB |
+| **Opus SSB mono** | 48 kHz mono | Opus | 24–64 kbps | Hoge kwaliteit |
+| **Opus SSB stereo** | 48 kHz stereo | Opus | 64–128 kbps | Stereo ontvangst |
+| **Opus RNNoise** | 48 kHz mono | Opus + filter | 32 kbps | Ruisonderdrukking |
 
 ---
 
 ## Bouwen
 
+### Windows
+
+**Vereiste:** .NET 10 SDK + een C compiler voor de native DLL.
+
+```powershell
+# 1. Bouw native DLL (kies één optie):
+#    a) Visual Studio Developer Command Prompt:
+cd C:\dev\RadioBridge\native
+build_windows.bat
+
+#    b) MinGW/MSYS2 (gcc moet in PATH staan):
+gcc -O2 -shared -IC:\dev\RadioBridge\native \
+    C:\dev\RadioBridge\native\radiobridge_audio.c \
+    -o C:\dev\RadioBridge\native\win-x64\radiobridge_audio.dll \
+    -lole32 -lwinmm
+
+# 2. Bouw en start de applicatie:
+cd C:\dev\RadioBridge\RadioBridge
+dotnet run
 ```
-cd RadioBridge
-dotnet restore
-dotnet build -c Release
+
+### Linux
+
+```bash
+# 1. Bouw native .so (gcc vereist):
+cd /pad/naar/RadioBridge/native
+gcc -O2 -shared -fPIC -I. radiobridge_audio.c \
+    -o linux-x64/radiobridge_audio.so -ldl -lpthread -lm
+
+# 2. Bouw en start:
+cd ../RadioBridge
+dotnet run
 ```
 
 ---
 
-## Audio presets
+## Gebruik
 
-### Opus (aanbevolen — lage bandbreedte)
+### Server (bij de radio)
 
-| Preset | Sample rate | Bitrate | Geschikt voor |
-|--------|-------------|---------|---------------|
-| Opus Telefoon | 8 kHz mono | 6–12 kbps | Noodverbinding, zeer trage link |
-| Opus Spraak | 16 kHz mono | 12–24 kbps | SSB spraak, normale verbinding |
-| Opus SSB mono | 48 kHz mono | 24–64 kbps | SSB/digimode, hoge kwaliteit |
-| Opus SSB stereo | 48 kHz stereo | 64–128 kbps | Stereo ontvangst |
-| Opus RNNoise | 48 kHz mono | 32 kbps | Met neuraal netwerk ruisfilter |
+1. Start RadioBridge, kies **Server**
+2. Stel audio-apparaten in (microfoon / luidspreker van de radio)
+3. Optioneel: seriële poorten voor CAT en PTT
+4. Klik **Server starten** — de applicatie wacht op een client
+5. Klik **🔥 Firewall openen** als de Windows firewall TCP blokkeert
 
-### PCM (geen compressie)
+### Client (op afstand)
 
-| Preset | Sample rate | Bitrate |
-|--------|-------------|---------|
-| PCM Telefoon | 8 kHz mono | ~128 kbps |
-| PCM Spraak | 16 kHz mono | ~256 kbps |
-| PCM SSB mono | 48 kHz mono | ~768 kbps |
-| PCM SSB stereo | 48 kHz stereo | ~1.5 Mbps |
-
-> Opus gebruikt een factor 10–20 minder bandbreedte bij vergelijkbare kwaliteit.
-> RNNoise (neuraal netwerk ruisfilter) werkt alleen bij 48kHz mono presets.
+1. Start RadioBridge, kies **Client**
+2. Vul het IP-adres van de server in
+3. Kies een preset (codec/kwaliteit)
+4. Optioneel: ruisfilter inschakelen
+5. Klik **Verbinden**
 
 ---
 
-## Verbinding
+## Seriële poort bridging
 
-### Remote pc (server)
-- Modus: **Server**
-- TCP Poort: `7000`
-- Opname/Afspelen: audio apparaten of VB-Audio VAC
-- Optioneel: seriële poorten voor CAT/PTT
-- Klik **Verbinden**
+| Poort | Gebruik | Standaard TCP |
+|-------|---------|---------------|
+| Poort 1 | CAT (transceiver control, bijv. CI-V) | 5001 |
+| Poort 2 | PTT (keying) | 5002 |
 
-### Local pc (client)
-- Modus: **Client**
-- IP-adres: IP van server (LAN / Tailscale / VPN)
-- TCP Poort: `7000`
-- Kies preset (Opus aanbevolen)
-- Klik **Verbinden**
-
-> De client kiest de codec, kwaliteit en ruisonderdrukking.
-> De server past zich automatisch aan.
+Op de client verbindt u uw CAT/PTT software met `localhost:5001` / `localhost:5002`.
 
 ---
 
-## Seriële poorten
+## Native audio shim
 
-| Instelling | Beschrijving |
-|------------|-------------|
-| COM poort | Lokale seriële poort |
-| Baud | 300–115200, beide kanten gelijk |
-| TCP poort | Aparte TCP verbinding per poort |
+De `radiobridge_audio` shim zit in `native/`:
+
+```
+native/
+├── radiobridge_audio.h       # C API header
+├── radiobridge_audio.c       # miniaudio implementatie
+├── miniaudio.h               # miniaudio v0.11.26 (single-header)
+├── win-x64/
+│   └── radiobridge_audio.dll # Windows x64 binary
+├── linux-x64/
+│   └── radiobridge_audio.so  # Linux x64 binary
+└── build_windows.bat         # Windows bouw-script
+```
 
 ---
 
 ## Afhankelijkheden
 
-| Pakket | Versie | Gebruik |
-|--------|--------|---------|
-| [NAudio](https://github.com/naudio/NAudio) | 2.2.1 | Audio opname/afspelen |
-| [Concentus](https://github.com/lostromb/concentus) | 2.2.2 | Opus codec (pure C#) |
-| [RNNoise.Net](https://github.com/mozilla/rnnoise) | 1.0.0 | Neuraal netwerk ruisonderdrukking |
-| System.IO.Ports | 10.0.0 | Seriële poort communicatie |
+| Pakket | Versie | Doel |
+|--------|--------|------|
+| Concentus | 2.2.2 | Opus codec (pure C#) |
+| RNNoise.Net | 1.0.0 | Neurale ruisonderdrukking |
+| System.IO.Ports | 10.0.0 | Seriële poorten |
+| Avalonia | 11.2.5 | Cross-platform GUI |
+| miniaudio | 0.11.26 | Native audio (C, single-header) |
 
 ---
 
-## Versiehistorie
+## Licentie
 
-| Versie | Wat is nieuw |
-|--------|-------------|
-| v0.1 | Audio over TCP (basis) |
-| v0.2 | Ruisonderdrukking (noise gate) |
-| v0.3 | Audio presets |
-| v0.5 | Seriële poort bridge |
-| v0.6 | Automatische server herstart na disconnect |
-| v0.7 | Firewall helper, RNNoise neuraal netwerk filter |
-| v0.8 | **Opus compressie** via Concentus — 6–128 kbps |
+MIT — zie LICENSE
