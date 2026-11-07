@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+.vs/
+
+# Archives (keep in arch/ folder but not root)
+RadioBridge-v*.zip
+SerialTest-v*.zip
+
+# NuGet packages
+*.nupkg
+packages/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
