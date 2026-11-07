@@ -4,58 +4,46 @@ using Concentus.Enums;
 namespace RadioBridge;
 
 /// <summary>
-/// Opus encoder/decoder wrapper using Concentus (pure C#).
+/// Opus encoder/decoder wrapper using Concentus (pure C#, no native dependencies).
 ///
 /// Opus requirements:
 ///   - Sample rates: 8000, 12000, 16000, 24000, 48000 Hz
-///   - Frame sizes: 2.5, 5, 10, 20, 40, 60 ms
+///   - Frame sizes: 10, 20, 40, 60 ms
 ///   - Channels: 1 (mono) or 2 (stereo)
-///   - Input: 16-bit PCM interleaved
-///
-/// We always encode at the preset's frame size (BufferMs).
-/// If BufferMs is not a valid Opus frame size we round up to the nearest valid one.
+///   - Input/output: 16-bit PCM interleaved shorts
 /// </summary>
 public class OpusCodec : IDisposable
 {
-    // Valid Opus frame sizes in ms
     private static readonly int[] ValidFrameMs = { 10, 20, 40, 60 };
 
     private IOpusEncoder? _encoder;
     private IOpusDecoder? _decoder;
 
-    public bool   IsEnabled    { get; private set; }
-    public int    SampleRate   { get; private set; }
-    public int    Channels     { get; private set; }
-    public int    FrameMs      { get; private set; }
-    public int    FrameSamples { get; private set; }  // samples per channel per frame
-    public int    Bitrate      { get; private set; }
+    public bool IsEnabled    { get; private set; }
+    public int  SampleRate   { get; private set; }
+    public int  Channels     { get; private set; }
+    public int  FrameMs      { get; private set; }
+    public int  FrameSamples { get; private set; }  // samples per channel per frame
+    public int  Bitrate      { get; private set; }
 
-    // Leftover PCM from previous encode call (incomplete frame)
-    private short[] _inputBuf  = Array.Empty<short>();
-    private int     _inputPos  = 0;
+    // Leftover input samples between DataAvailable callbacks
+    private short[] _inputBuf = Array.Empty<short>();
+    private int     _inputPos = 0;
 
-    // Output buffer for encoded packets
-    private byte[]  _encodeBuf = new byte[4000];
+    // Reusable encode output buffer (max Opus packet = 1275 bytes)
+    private readonly byte[] _encodeBuf = new byte[1275];
 
     // ── Init ──────────────────────────────────────────────────────────────────
 
     public void Initialize(bool enabled, int sampleRate, int channels, int bufferMs, int bitrate = 0)
     {
         Dispose();
-        IsEnabled  = false;
-        _inputPos  = 0;
+        IsEnabled = false;
+        _inputPos = 0;
 
         if (!enabled) return;
 
-        // Validate sample rate
-        int[] validRates = { 8000, 12000, 16000, 24000, 48000 };
-        if (!validRates.Contains(sampleRate))
-        {
-            // Fallback: find nearest valid rate
-            sampleRate = validRates.OrderBy(r => Math.Abs(r - sampleRate)).First();
-        }
-
-        // Round up to nearest valid Opus frame size
+        // Clamp to nearest valid Opus frame size
         int frameMs = ValidFrameMs.FirstOrDefault(f => f >= bufferMs, 60);
 
         SampleRate   = sampleRate;
@@ -64,14 +52,14 @@ public class OpusCodec : IDisposable
         FrameSamples = sampleRate * frameMs / 1000;
 
         // Default bitrate: scale with sample rate and channels
-        // 8kHz mono ~8kbps, 16kHz mono ~16kbps, 48kHz mono ~32kbps, 48kHz stereo ~64kbps
         Bitrate = bitrate > 0 ? bitrate : Math.Max(8000, sampleRate * channels / 24);
 
-        _inputBuf = new short[FrameSamples * channels * 4]; // buffer 4 frames
+        // Buffer holds up to 4 frames worth of leftover samples
+        _inputBuf = new short[FrameSamples * channels * 4];
 
         _encoder = OpusCodecFactory.CreateEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP);
-        _encoder.Bitrate = Bitrate;
-        _encoder.SignalType = OpusSignalType.OPUS_SIGNAL_VOICE;
+        _encoder.Bitrate    = Bitrate;
+        _encoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
         _encoder.Complexity = 5;
 
         _decoder = OpusCodecFactory.CreateDecoder(sampleRate, channels);
@@ -83,7 +71,7 @@ public class OpusCodec : IDisposable
 
     /// <summary>
     /// Encode a buffer of raw 16-bit PCM bytes.
-    /// Returns a list of encoded Opus packets (one per frame).
+    /// Returns a list of encoded Opus packets (one per complete frame).
     /// Leftover samples are buffered for the next call.
     /// </summary>
     public List<byte[]> Encode(byte[] pcmBytes, int byteCount)
@@ -91,25 +79,22 @@ public class OpusCodec : IDisposable
         var packets = new List<byte[]>();
         if (_encoder == null || !IsEnabled) return packets;
 
-        int totalSamples = byteCount / 2; // 16-bit = 2 bytes per sample
-        int samplesPerFrame = FrameSamples * Channels;
+        int sampleCount      = byteCount / 2;          // 2 bytes per sample
+        int samplesPerFrame  = FrameSamples * Channels;
 
-        // Copy new samples into buffer
-        for (int i = 0; i < totalSamples; i++)
+        // Append new samples to the leftover buffer
+        for (int i = 0; i < sampleCount; i++)
         {
-            if (_inputPos >= _inputBuf.Length)
-            {
-                // Buffer overflow — encode what we have and reset
-                _inputPos = 0;
-            }
+            if (_inputPos >= _inputBuf.Length) _inputPos = 0; // safety
             _inputBuf[_inputPos++] = (short)(pcmBytes[i * 2] | (pcmBytes[i * 2 + 1] << 8));
         }
 
-        // Encode complete frames
+        // Encode all complete frames
         int pos = 0;
         while (pos + samplesPerFrame <= _inputPos)
         {
-            int encoded = _encoder.Encode(_inputBuf, pos, FrameSamples, _encodeBuf, 0, _encodeBuf.Length);
+            var frameSpan = new ReadOnlySpan<short>(_inputBuf, pos, samplesPerFrame);
+            int encoded   = _encoder.Encode(frameSpan, FrameSamples, _encodeBuf, _encodeBuf.Length);
             if (encoded > 0)
             {
                 var packet = new byte[encoded];
@@ -138,13 +123,17 @@ public class OpusCodec : IDisposable
         if (_decoder == null || !IsEnabled) return Array.Empty<byte>();
 
         int samplesPerFrame = FrameSamples * Channels;
-        var pcmOut = new short[samplesPerFrame];
+        var pcmOut          = new short[samplesPerFrame];
 
-        int decoded = _decoder.Decode(packet, 0, packetLen, pcmOut, 0, FrameSamples);
+        int decoded = _decoder.Decode(
+            new ReadOnlySpan<byte>(packet, 0, packetLen),
+            pcmOut,
+            FrameSamples);
+
         if (decoded <= 0) return Array.Empty<byte>();
 
         int outBytes = decoded * Channels * 2;
-        var result = new byte[outBytes];
+        var result   = new byte[outBytes];
         for (int i = 0; i < decoded * Channels; i++)
         {
             result[i * 2]     = (byte)(pcmOut[i] & 0xFF);
@@ -153,21 +142,20 @@ public class OpusCodec : IDisposable
         return result;
     }
 
+    // ── Info ──────────────────────────────────────────────────────────────────
+
+    public string InfoString() =>
+        IsEnabled ? $"Opus {Bitrate / 1000}kbps  {FrameMs}ms frames" : "PCM (geen compressie)";
+
     // ── Dispose ───────────────────────────────────────────────────────────────
 
     public void Dispose()
     {
-        _encoder = null;
-        _decoder = null;
+        _encoder?.Dispose();
+        _decoder?.Dispose();
+        _encoder  = null;
+        _decoder  = null;
         IsEnabled = false;
         _inputPos = 0;
-    }
-
-    // ── Info ──────────────────────────────────────────────────────────────────
-
-    public string InfoString()
-    {
-        if (!IsEnabled) return "PCM (geen compressie)";
-        return $"Opus  {Bitrate / 1000}kbps  {FrameMs}ms frames";
     }
 }
