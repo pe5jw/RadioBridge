@@ -52,7 +52,7 @@ public class MainForm : Form
 
     private void BuildUI()
     {
-        Text            = "RadioBridge  —  Audio over netwerk  v0.7";
+        Text            = "RadioBridge  —  Audio over netwerk  v0.8";
         Size            = new Size(640, 980);
         MinimumSize     = new Size(560, 820);
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -96,7 +96,7 @@ public class MainForm : Form
         var pnlQual = MakeGroupBox("Audio kwaliteit / latency  —  client bepaalt", pad, y, 600, 88);
         _lblPresetInfo = new Label
         {
-            Text      = "ℹ  Server past zich automatisch aan op de keuze van de client.",
+            Text      = "ℹ  Server past zich aan: audio kwaliteit, codec (Opus/PCM) en ruisonderdrukking.",
             Location  = new Point(12, 20),
             AutoSize  = false,
             Size      = new Size(572, 18),
@@ -295,8 +295,8 @@ public class MainForm : Form
         _cbPreset.Enabled = isClient && !_connected;
         _chkNoise.Enabled = isClient || _connected;
         _lblPresetInfo.Text = isServer
-            ? "ℹ  Server past zich automatisch aan op de keuze van de client."
-            : "ℹ  Jouw keuze wordt naar de server gestuurd bij verbinden.";
+            ? "ℹ  Server past zich aan: audio kwaliteit, codec (Opus/PCM) en ruisonderdrukking."
+            : "ℹ  Jouw keuze (codec, kwaliteit, ruisonderdrukking) wordt naar de server gestuurd.";
         _lblPresetInfo.ForeColor = isServer
             ? Color.FromArgb(120, 180, 120)
             : Color.FromArgb(100, 160, 220);
@@ -467,6 +467,7 @@ public class MainForm : Form
         _engine.ConfigReceived += cfg => SafeInvoke(() =>
         {
             AppendLog($"Client koos: {cfg.PresetName}", Color.FromArgb(100, 200, 255));
+            AppendLog($"Codec: {(cfg.UseOpus ? $"Opus {cfg.OpusBitrate / 1000}kbps" : "PCM")}", Color.FromArgb(100, 200, 255));
             AppendLog($"Ruis: {(cfg.NoiseSuppress ? "AAN" : "UIT")}  |  {cfg.SampleRate}Hz {cfg.BitsPerSample}bit {cfg.Channels}ch {cfg.BufferMs}ms", Color.FromArgb(100, 200, 255));
             // Client: apply server serial config
             if (_rbClient.Checked)
@@ -516,6 +517,7 @@ public class MainForm : Form
         _engine.ConfigReceived += cfg => SafeInvoke(() =>
         {
             AppendLog($"Client koos: {cfg.PresetName}", Color.FromArgb(100, 200, 255));
+            AppendLog($"Codec: {(cfg.UseOpus ? $"Opus {cfg.OpusBitrate / 1000}kbps" : "PCM")}", Color.FromArgb(100, 200, 255));
             AppendLog($"Ruis: {(cfg.NoiseSuppress ? "AAN" : "UIT")}  |  {cfg.SampleRate}Hz {cfg.BitsPerSample}bit {cfg.Channels}ch {cfg.BufferMs}ms", Color.FromArgb(100, 200, 255));
         });
         _engine.ClientDisconnected += () =>

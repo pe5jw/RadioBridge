@@ -1,4 +1,4 @@
-# RadioBridge v0.7 — Audio + Serieel over netwerk
+# RadioBridge v0.8 — Audio + Serieel over netwerk
 
 2-way audio streaming én seriële poort bridging tussen twee pc's via TCP.
 Bedoeld voor remote radio bediening: audio (microfoon/speaker of VAC) én CAT/PTT over het netwerk.
@@ -7,10 +7,11 @@ Bedoeld voor remote radio bediening: audio (microfoon/speaker of VAC) én CAT/PT
 
 ## Functies
 
+- **Opus compressie** — factor 10–20 minder bandbreedte t.o.v. ruwe PCM
 - **Audio bridge** — volledig duplex, instelbare kwaliteit/latency
 - **Seriële poort bridge** — 2 poorten (CAT + PTT), instelbaar baud/TCP-poort
 - **Ruisonderdrukking** — RNNoise (neuraal netwerk) bij 48kHz mono, anders noise gate
-- **Audio presets** — van 8kHz telefoon tot 48kHz stereo (~1.5 Mbps)
+- **PCM fallback** — ruwe PCM presets nog steeds beschikbaar
 - **Automatische firewall** — UAC-prompt voor firewall regels
 - **Server herstart automatisch** na verbroken verbinding
 
@@ -19,14 +20,11 @@ Bedoeld voor remote radio bediening: audio (microfoon/speaker of VAC) én CAT/PT
 ## Vereisten
 
 - Windows 10/11
-- .NET 10 SDK: https://dotnet.microsoft.com/download/dotnet/10.0
-- (Optioneel) VB-Audio Virtual Cable voor koppeling met SDR/radio software
+- [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) → "Run desktop apps" → Windows x64
 
 ---
 
 ## Bouwen
-
-Dubbelklik op `build.bat` of voer uit in CMD:
 
 ```
 cd RadioBridge
@@ -34,108 +32,62 @@ dotnet restore
 dotnet build -c Release
 ```
 
-De executable verschijnt in:
-```
-bin\Release\net10.0-windows\RadioBridge.exe
-```
-
----
-
-## Testen op één pc (loopback test)
-
-### Stap 1 — Start de server
-
-Open `RadioBridge.exe`, stel in:
-- Modus: **Server**
-- TCP Poort: `7000`
-- Opname: microfoon of VAC CABLE Output
-- Afspelen: speakers of VAC CABLE Input
-- Klik **Verbinden**
-
-### Stap 2 — Start een tweede instantie als client
-
-Open een tweede `RadioBridge.exe`, stel in:
-- Modus: **Client**
-- IP-adres: `127.0.0.1`
-- TCP Poort: `7000`
-- Opname: een **ander** opname-apparaat dan de server
-- Afspelen: een **ander** afspeel-apparaat dan de server
-- Klik **Verbinden**
-
-### Stap 3 — Verifieer
-
-In het Log-venster zie je:
-```
-Server:  [HH:MM:SS]  Verbinding ontvangen van 127.0.0.1:xxxxx
-         [HH:MM:SS]  Audio actief  |  16000Hz 16bit 1ch  buf 20ms  ~256 kbps
-
-Client:  [HH:MM:SS]  Verbonden met 127.0.0.1:7000
-         [HH:MM:SS]  Configuratie verstuurd naar server
-         [HH:MM:SS]  Audio actief  |  16000Hz 16bit 1ch  buf 20ms  ~256 kbps
-```
-
----
-
-## Testen op twee pc's via LAN of Tailscale
-
-### Remote pc (server)
-- Modus: **Server**
-- TCP Poort: `7000`
-- Opname: CABLE Output (audio van radio software)
-- Afspelen: CABLE Input (audio naar radio software)
-- Serieel: Poort 1 → COM-poort van radio (CAT), baud instellen, TCP poort `5000`
-- Klik **Verbinden**
-
-### Local pc (client)
-- Modus: **Client**
-- IP-adres: IP van de Remote pc (LAN: `192.168.x.x` / Tailscale: `100.x.x.x`)
-- TCP Poort: `7000`
-- Opname: microfoon (TX audio)
-- Afspelen: speakers of hoofdtelefoon (RX audio)
-- Serieel: Poort 1 → virtuele COM-poort van logging software, zelfde TCP poort `5000`
-- Klik **Verbinden**
-
-> De client kiest de audio preset en ruisonderdrukking; de server past zich automatisch aan.
-> De server stuurt de seriële poort configuratie naar de client bij verbinding.
-
-### Firewall openen (eenmalig op de server)
-
-Klik op de **🛡 Firewall** knop in RadioBridge — dit vraagt UAC toestemming en voegt de juiste regels toe voor alle geconfigureerde TCP poorten.
-
-Of handmatig via PowerShell als Administrator:
-```powershell
-New-NetFirewallRule -DisplayName "RadioBridge Audio" `
-  -Direction Inbound -Protocol TCP -LocalPort 7000 -Action Allow
-New-NetFirewallRule -DisplayName "RadioBridge Serial 1" `
-  -Direction Inbound -Protocol TCP -LocalPort 5000 -Action Allow
-```
-
 ---
 
 ## Audio presets
 
-| Preset           | Sample rate | Kanalen | Buffer | Bitrate    |
-|------------------|-------------|---------|--------|------------|
-| Telefoon         | 8 kHz       | mono    | 10–100ms | ~128 kbps |
-| Spraak smal      | 16 kHz      | mono    | 10–100ms | ~256 kbps |
-| Spraak stereo    | 16 kHz      | stereo  | 20–50ms  | ~512 kbps |
-| SSB mono         | 48 kHz      | mono    | 10–50ms  | ~768 kbps |
-| SSB stereo       | 48 kHz      | stereo  | 10–50ms  | ~1.5 Mbps |
-| RNNoise ready    | 48 kHz      | mono    | 10–50ms  | ~768 kbps |
+### Opus (aanbevolen — lage bandbreedte)
 
-> RNNoise (neuraal netwerk ruisfilter) werkt alleen bij 48kHz mono. Bij andere presets valt de ruisonderdrukking terug op een noise gate.
+| Preset | Sample rate | Bitrate | Geschikt voor |
+|--------|-------------|---------|---------------|
+| Opus Telefoon | 8 kHz mono | 6–12 kbps | Noodverbinding, zeer trage link |
+| Opus Spraak | 16 kHz mono | 12–24 kbps | SSB spraak, normale verbinding |
+| Opus SSB mono | 48 kHz mono | 24–64 kbps | SSB/digimode, hoge kwaliteit |
+| Opus SSB stereo | 48 kHz stereo | 64–128 kbps | Stereo ontvangst |
+| Opus RNNoise | 48 kHz mono | 32 kbps | Met neuraal netwerk ruisfilter |
+
+### PCM (geen compressie)
+
+| Preset | Sample rate | Bitrate |
+|--------|-------------|---------|
+| PCM Telefoon | 8 kHz mono | ~128 kbps |
+| PCM Spraak | 16 kHz mono | ~256 kbps |
+| PCM SSB mono | 48 kHz mono | ~768 kbps |
+| PCM SSB stereo | 48 kHz stereo | ~1.5 Mbps |
+
+> Opus gebruikt een factor 10–20 minder bandbreedte bij vergelijkbare kwaliteit.
+> RNNoise (neuraal netwerk ruisfilter) werkt alleen bij 48kHz mono presets.
+
+---
+
+## Verbinding
+
+### Remote pc (server)
+- Modus: **Server**
+- TCP Poort: `7000`
+- Opname/Afspelen: audio apparaten of VB-Audio VAC
+- Optioneel: seriële poorten voor CAT/PTT
+- Klik **Verbinden**
+
+### Local pc (client)
+- Modus: **Client**
+- IP-adres: IP van server (LAN / Tailscale / VPN)
+- TCP Poort: `7000`
+- Kies preset (Opus aanbevolen)
+- Klik **Verbinden**
+
+> De client kiest de codec, kwaliteit en ruisonderdrukking.
+> De server past zich automatisch aan.
 
 ---
 
 ## Seriële poorten
 
-Twee seriële bruggen zijn beschikbaar (bijv. CAT + PTT):
-
 | Instelling | Beschrijving |
 |------------|-------------|
-| COM poort  | Lokale seriële poort |
-| Baud       | 300 – 115200, moet aan beide kanten gelijk zijn |
-| TCP poort  | Aparte TCP verbinding per seriële brug |
+| COM poort | Lokale seriële poort |
+| Baud | 300–115200, beide kanten gelijk |
+| TCP poort | Aparte TCP verbinding per poort |
 
 ---
 
@@ -144,6 +96,7 @@ Twee seriële bruggen zijn beschikbaar (bijv. CAT + PTT):
 | Pakket | Versie | Gebruik |
 |--------|--------|---------|
 | [NAudio](https://github.com/naudio/NAudio) | 2.2.1 | Audio opname/afspelen |
+| [Concentus](https://github.com/lostromb/concentus) | 2.2.2 | Opus codec (pure C#) |
 | [RNNoise.Net](https://github.com/mozilla/rnnoise) | 1.0.0 | Neuraal netwerk ruisonderdrukking |
 | System.IO.Ports | 10.0.0 | Seriële poort communicatie |
 
@@ -158,4 +111,5 @@ Twee seriële bruggen zijn beschikbaar (bijv. CAT + PTT):
 | v0.3 | Audio presets |
 | v0.5 | Seriële poort bridge |
 | v0.6 | Automatische server herstart na disconnect |
-| v0.7 | Firewall helper, RNNoise neuraal netwerk filter, server stuurt serieel config naar client |
+| v0.7 | Firewall helper, RNNoise neuraal netwerk filter |
+| v0.8 | **Opus compressie** via Concentus — 6–128 kbps |

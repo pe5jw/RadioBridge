@@ -13,5 +13,6 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="RNNoise.Net" Version="1.0.0" />
     <PackageReference Include="System.IO.Ports" Version="10.0.0" />
+    <PackageReference Include="Concentus" Version="2.2.2" />
   </ItemGroup>
 </Project>
