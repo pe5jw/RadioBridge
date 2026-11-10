@@ -1,9 +1,9 @@
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Interactivity;
+using Avalonia.Layout;
+using Avalonia.Media;
 using Avalonia.Threading;
 using System;
-using System.Collections.Generic;
 using System.IO.Ports;
 using System.Text;
 using System.Threading.Tasks;
@@ -12,9 +12,41 @@ namespace RadioBridge;
 
 public partial class MainWindow : Window
 {
-    private AudioEngine?  _engine;
-    private SerialBridge? _cat;
-    private SerialBridge? _ptt;
+    // ── Controls ──────────────────────────────────────────────────────────────
+    private readonly RadioButton   _rbServer    = new() { Content = "Server  (wacht op verbinding)", IsChecked = true, GroupName = "Mode" };
+    private readonly RadioButton   _rbClient    = new() { Content = "Client  (maak verbinding)", GroupName = "Mode" };
+    private readonly TextBox       _txtHost     = new() { Text = "127.0.0.1", IsEnabled = false };
+    private readonly NumericUpDown _nudPort     = new() { Minimum = 1024, Maximum = 65535, Value = 5000, Width = 110 };
+    private readonly ComboBox      _cbCapture   = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox      _cbPlayback  = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox      _cbPreset    = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly CheckBox      _chkNoise    = new() { Content = "Ruisfilter inschakelen" };
+    private readonly TextBlock     _tblNoiseMode  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock     _tblPresetInfo = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), FontSize = 11, Margin = new Thickness(0,4,0,0) };
+    private readonly Button        _btnConnect  = new() { Content = "Server starten", MinWidth = 130 };
+    private readonly Button        _btnRefresh  = new() { Content = "↻  Apparaten", MinWidth = 120 };
+    private readonly Button        _btnFirewall = new() { Content = "🔥  Firewall", MinWidth = 120 };
+    private readonly TextBlock     _tblLog      = new() { Foreground = new SolidColorBrush(Color.Parse("#aaa")), FontFamily = new FontFamily("Consolas,monospace"), FontSize = 11, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6) };
+    private readonly TextBlock     _tblStatus   = new() { Text = "Gestopt", Foreground = new SolidColorBrush(Color.Parse("#6fbf6f")) };
+    private readonly Border        _pnlStatus   = new() { Background = new SolidColorBrush(Color.Parse("#1a3a1a")), BorderBrush = new SolidColorBrush(Color.Parse("#2a6a2a")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8,6) };
+    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, Height = 260 };
+
+    // Serial port 1
+    private readonly CheckBox      _chkPort1     = new() { Content = "Inschakelen" };
+    private readonly ComboBox      _cbPort1Com   = new() { Width = 110 };
+    private readonly NumericUpDown _nudPort1Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, Width = 100 };
+    private readonly NumericUpDown _nudPort1Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5001, Width = 90 };
+    private readonly StackPanel    _spPort1      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
+
+    // Serial port 2
+    private readonly CheckBox      _chkPort2     = new() { Content = "Inschakelen" };
+    private readonly ComboBox      _cbPort2Com   = new() { Width = 110 };
+    private readonly NumericUpDown _nudPort2Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, Width = 100 };
+    private readonly NumericUpDown _nudPort2Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5002, Width = 90 };
+    private readonly StackPanel    _spPort2      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
+
+    // ── App state ─────────────────────────────────────────────────────────────
+    private AudioEngine? _engine;
     private bool _connected;
     private bool _restarting;
     private int  _serverPort;
@@ -22,88 +54,246 @@ public partial class MainWindow : Window
     private int  _serverPlaybackIdx;
 
     private readonly StringBuilder _logBuf = new();
-    private const int MaxLogLines = 300;
     private int _logLineCount;
+    private const int MaxLogLines = 300;
+
+    // ── Constructor ───────────────────────────────────────────────────────────
 
     public MainWindow()
     {
-        InitializeComponent();
+        // Window properties — set directly, no XAML loader needed
+        Title      = "RadioBridge — Audio over netwerk v0.9";
+        Width      = 680;
+        Height     = 1020;
+        MinWidth   = 560;
+        MinHeight  = 800;
+        Background = new SolidColorBrush(Color.Parse("#1e1e1e"));
+        Foreground = new SolidColorBrush(Color.Parse("#dcdcdc"));
+        FontSize   = 13;
+
+        BuildUI();
         PopulateDevices();
         PopulatePresets();
         PopulateSerialPorts();
         UpdateUI();
     }
 
-    // ── Device lists ──────────────────────────────────────────────────────────
+    // ── Build UI ──────────────────────────────────────────────────────────────
+
+    private void BuildUI()
+    {
+        var root = new StackPanel { Margin = new Thickness(10), Spacing = 0 };
+        var scroll = new ScrollViewer { Content = root };
+        Content = scroll;
+
+        // Modus
+        _rbServer.IsCheckedChanged += (s, e) => UpdateUI();
+        _rbClient.IsCheckedChanged += (s, e) => UpdateUI();
+        root.Children.Add(Section("Modus", new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 24,
+            Children = { _rbServer, _rbClient }
+        }));
+
+        // Verbinding
+        var connGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("130,*,60,110") };
+        connGrid.Children.Add(ColLabel("IP-adres (client):", 0));
+        Grid.SetColumn(_txtHost, 1); connGrid.Children.Add(_txtHost);
+        connGrid.Children.Add(ColLabel("Poort:", 2));
+        Grid.SetColumn(_nudPort, 3); connGrid.Children.Add(_nudPort);
+        root.Children.Add(Section("Verbinding", connGrid));
+
+        // Audio apparaten
+        var devGrid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("120,*"),
+            RowDefinitions    = new RowDefinitions("Auto,6,Auto")
+        };
+        devGrid.Children.Add(RowColLabel("Opname (mic):", 0, 0));
+        Grid.SetRow(_cbCapture, 0); Grid.SetColumn(_cbCapture, 1); devGrid.Children.Add(_cbCapture);
+        devGrid.Children.Add(RowColLabel("Afspelen (spkr):", 2, 0));
+        Grid.SetRow(_cbPlayback, 2); Grid.SetColumn(_cbPlayback, 1); devGrid.Children.Add(_cbPlayback);
+        root.Children.Add(Section("Audio apparaten", devGrid));
+
+        // Preset
+        _cbPreset.SelectionChanged += (s, e) => UpdatePresetInfo();
+        root.Children.Add(Section("Codec / kwaliteit", new StackPanel
+        {
+            Children = { _cbPreset, _tblPresetInfo }
+        }));
+
+        // Ruis
+        _chkNoise.IsCheckedChanged += OnNoiseChanged;
+        root.Children.Add(Section("Ruisonderdrukking", new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 12,
+            Children    = { _chkNoise, _tblNoiseMode }
+        }));
+
+        // Serieel 1
+        _spPort1.Children.Add(SimpleLabel("COM:"));
+        _spPort1.Children.Add(_cbPort1Com);
+        _spPort1.Children.Add(SimpleLabel("Baud:"));
+        _spPort1.Children.Add(_nudPort1Baud);
+        _spPort1.Children.Add(SimpleLabel("TCP:"));
+        _spPort1.Children.Add(_nudPort1Tcp);
+        _chkPort1.IsCheckedChanged += (s, e) => _spPort1.IsEnabled = _chkPort1.IsChecked == true;
+        root.Children.Add(Section("Serieel poort 1  (CAT)", new StackPanel
+        {
+            Children = { _chkPort1, _spPort1 }
+        }));
+
+        // Serieel 2
+        _spPort2.Children.Add(SimpleLabel("COM:"));
+        _spPort2.Children.Add(_cbPort2Com);
+        _spPort2.Children.Add(SimpleLabel("Baud:"));
+        _spPort2.Children.Add(_nudPort2Baud);
+        _spPort2.Children.Add(SimpleLabel("TCP:"));
+        _spPort2.Children.Add(_nudPort2Tcp);
+        _chkPort2.IsCheckedChanged += (s, e) => _spPort2.IsEnabled = _chkPort2.IsChecked == true;
+        root.Children.Add(Section("Serieel poort 2  (PTT)", new StackPanel
+        {
+            Children = { _chkPort2, _spPort2 }
+        }));
+
+        // Knoppen
+        _btnConnect.Background = new SolidColorBrush(Color.Parse("#1a6b1a"));
+        _btnConnect.Click     += OnConnectClick;
+        _btnRefresh.Click     += (s, e) => { PopulateDevices(); PopulateSerialPorts(); AppendLog("Apparatenlijst vernieuwd."); };
+        _btnFirewall.Click    += OnFirewallClick;
+        root.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0,6,0,4),
+            Children    = { _btnConnect, _btnRefresh, _btnFirewall }
+        });
+
+        // Status
+        _pnlStatus.Child = _tblStatus;
+        root.Children.Add(_pnlStatus);
+
+        // Log
+        _logScroller.Content = _tblLog;
+        root.Children.Add(new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.Parse("#444")),
+            BorderThickness = new Thickness(1),
+            CornerRadius    = new CornerRadius(4),
+            Margin          = new Thickness(0,4,0,0),
+            Child           = _logScroller
+        });
+    }
+
+    // ── UI helpers ────────────────────────────────────────────────────────────
+
+    private static Border Section(string title, Control content)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock
+        {
+            Text       = title,
+            Foreground = new SolidColorBrush(Color.Parse("#888")),
+            FontSize   = 11,
+            Margin     = new Thickness(0,0,0,4)
+        });
+        panel.Children.Add(content);
+        return new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.Parse("#444")),
+            BorderThickness = new Thickness(1),
+            CornerRadius    = new CornerRadius(4),
+            Padding         = new Thickness(10,8),
+            Margin          = new Thickness(0,3),
+            Child           = panel
+        };
+    }
+
+    private static Control ColLabel(string text, int col)
+    {
+        var tb = new TextBlock { Text = text, Foreground = new SolidColorBrush(Color.Parse("#aaa")), VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(tb, col);
+        return tb;
+    }
+
+    private static Control RowColLabel(string text, int row, int col)
+    {
+        var tb = new TextBlock { Text = text, Foreground = new SolidColorBrush(Color.Parse("#aaa")), VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetRow(tb, row);
+        Grid.SetColumn(tb, col);
+        return tb;
+    }
+
+    private static TextBlock SimpleLabel(string text) => new()
+    {
+        Text = text, Foreground = new SolidColorBrush(Color.Parse("#aaa")), VerticalAlignment = VerticalAlignment.Center
+    };
+
+    // ── Populate ──────────────────────────────────────────────────────────────
 
     private void PopulateDevices()
     {
-        CbCapture.Items.Clear();
+        _cbCapture.Items.Clear();
         foreach (var (idx, name) in AudioEngine.GetCaptureDevices())
-            CbCapture.Items.Add(new DeviceItem(idx, name));
-        CbCapture.SelectedIndex = 0;
+            _cbCapture.Items.Add(new DeviceItem(idx, name));
+        if (_cbCapture.Items.Count > 0) _cbCapture.SelectedIndex = 0;
 
-        CbPlayback.Items.Clear();
+        _cbPlayback.Items.Clear();
         foreach (var (idx, name) in AudioEngine.GetPlaybackDevices())
-            CbPlayback.Items.Add(new DeviceItem(idx, name));
-        CbPlayback.SelectedIndex = 0;
+            _cbPlayback.Items.Add(new DeviceItem(idx, name));
+        if (_cbPlayback.Items.Count > 0) _cbPlayback.SelectedIndex = 0;
     }
 
     private void PopulatePresets()
     {
-        CbPreset.Items.Clear();
+        _cbPreset.Items.Clear();
         foreach (var p in AudioPresets.All)
-            CbPreset.Items.Add(p);
-        // Default: Opus Spraak 16kHz mono 12kbps
-        CbPreset.SelectedIndex = 6;
-        CbPreset.SelectionChanged += OnPresetChanged;
+            _cbPreset.Items.Add(p);
+        _cbPreset.SelectedIndex = 6;
         UpdatePresetInfo();
     }
 
     private void PopulateSerialPorts()
     {
-        var ports = SerialPort.GetPortNames();
-        CbPort1Com.Items.Clear();
-        CbPort2Com.Items.Clear();
-        foreach (var p in ports)
+        _cbPort1Com.Items.Clear();
+        _cbPort2Com.Items.Clear();
+        foreach (var p in SerialPort.GetPortNames())
         {
-            CbPort1Com.Items.Add(p);
-            CbPort2Com.Items.Add(p);
+            _cbPort1Com.Items.Add(p);
+            _cbPort2Com.Items.Add(p);
         }
-        if (CbPort1Com.Items.Count > 0) CbPort1Com.SelectedIndex = 0;
-        if (CbPort2Com.Items.Count > 0) CbPort2Com.SelectedIndex = 0;
+        if (_cbPort1Com.Items.Count > 0) { _cbPort1Com.SelectedIndex = 0; _cbPort2Com.SelectedIndex = 0; }
     }
 
-    // ── UI state ──────────────────────────────────────────────────────────────
+    // ── State ─────────────────────────────────────────────────────────────────
 
     private void UpdateUI()
     {
-        bool isServer = RbServer.IsChecked == true;
-        TxtHost.IsEnabled  = !isServer;
-        GridPort1.IsEnabled = isServer;
-        GridPort2.IsEnabled = isServer;
+        bool isServer = _rbServer.IsChecked == true;
+        _txtHost.IsEnabled   = !isServer;
+        _chkPort1.IsEnabled  = isServer;
+        _chkPort2.IsEnabled  = isServer;
+        _spPort1.IsEnabled   = isServer && _chkPort1.IsChecked == true;
+        _spPort2.IsEnabled   = isServer && _chkPort2.IsChecked == true;
 
-        BtnConnect.Content    = _connected ? "Verbreken" : (isServer ? "Server starten" : "Verbinden");
-        BtnConnect.Background = _connected
-            ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#8b1a1a"))
-            : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#1a6b1a"));
+        _btnConnect.Content    = _connected ? "Verbreken" : (isServer ? "Server starten" : "Verbinden");
+        _btnConnect.Background = _connected
+            ? new SolidColorBrush(Color.Parse("#8b1a1a"))
+            : new SolidColorBrush(Color.Parse("#1a6b1a"));
 
-        CbPreset.IsEnabled  = !_connected && !isServer;
-        CbCapture.IsEnabled = !_connected;
-        CbPlayback.IsEnabled = !_connected;
+        _cbPreset.IsEnabled   = !_connected && !isServer;
+        _cbCapture.IsEnabled  = !_connected;
+        _cbPlayback.IsEnabled = !_connected;
     }
 
     private void UpdatePresetInfo()
     {
-        if (CbPreset.SelectedItem is AudioPreset p)
+        if (_cbPreset.SelectedItem is AudioPreset p)
         {
             int kbps = p.UseOpus
                 ? p.OpusBitrate / 1000
                 : (p.SampleRate * p.BitsPerSample * p.Channels) / 1000;
-            TblPresetInfo.Text =
-                $"{p.SampleRate} Hz  {p.BitsPerSample} bit  {p.Channels} ch  " +
-                $"buf {p.BufferMs}ms  ~{kbps} kbps  " +
-                (p.UseOpus ? $"[Opus]" : "[PCM geen compressie]");
+            _tblPresetInfo.Text =
+                $"{p.SampleRate} Hz  {p.BitsPerSample} bit  {p.Channels} ch  buf {p.BufferMs}ms  ~{kbps} kbps  " +
+                (p.UseOpus ? "[Opus]" : "[PCM]");
         }
     }
 
@@ -111,13 +301,13 @@ public partial class MainWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            TblStatus.Text = text;
-            PnlStatus.Background = error
-                ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#3a1a1a"))
-                : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#1a3a1a"));
-            TblStatus.Foreground = error
-                ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#bf6f6f"))
-                : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#6fbf6f"));
+            _tblStatus.Text       = text;
+            _pnlStatus.Background = error
+                ? new SolidColorBrush(Color.Parse("#3a1a1a"))
+                : new SolidColorBrush(Color.Parse("#1a3a1a"));
+            _tblStatus.Foreground = error
+                ? new SolidColorBrush(Color.Parse("#bf6f6f"))
+                : new SolidColorBrush(Color.Parse("#6fbf6f"));
         });
     }
 
@@ -128,120 +318,81 @@ public partial class MainWindow : Window
             var ts = DateTime.Now.ToString("HH:mm:ss");
             if (_logLineCount >= MaxLogLines)
             {
-                // Trim oldest ~50 lines
-                var text = TblLog.Text ?? "";
-                int nl   = 0;
-                int pos  = 0;
-                while (pos < text.Length && nl < 50)
-                {
-                    if (text[pos] == '\n') nl++;
-                    pos++;
-                }
+                var text = _tblLog.Text ?? "";
+                int nl = 0, pos = 0;
+                while (pos < text.Length && nl < 50) { if (text[pos++] == '\n') nl++; }
                 _logBuf.Clear();
                 _logBuf.Append(text[pos..]);
                 _logLineCount -= nl;
             }
             _logBuf.AppendLine($"[{ts}]  {msg}");
             _logLineCount++;
-            TblLog.Text = _logBuf.ToString();
-            LogScroller.ScrollToEnd();
+            _tblLog.Text = _logBuf.ToString();
+            _logScroller.ScrollToEnd();
         });
     }
 
-    // ── Event handlers ────────────────────────────────────────────────────────
+    // ── Handlers ─────────────────────────────────────────────────────────────
 
-    private void OnModeChanged(object? sender, RoutedEventArgs e) => UpdateUI();
-
-    private void OnPresetChanged(object? sender, SelectionChangedEventArgs e) => UpdatePresetInfo();
-
-    private void OnNoiseChanged(object? sender, RoutedEventArgs e)
+    private void OnNoiseChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        bool en = ChkNoise.IsChecked == true;
+        bool en = _chkNoise.IsChecked == true;
         _engine?.SetNoiseSuppression(en);
-        TblNoiseMode.Text = en ? "(berekening...)" : "";
+        _tblNoiseMode.Text = en ? "(berekening...)" : "";
     }
 
-    private void OnPort1Changed(object? sender, RoutedEventArgs e)
-        => GridPort1.IsEnabled = ChkPort1.IsChecked == true;
-
-    private void OnPort2Changed(object? sender, RoutedEventArgs e)
-        => GridPort2.IsEnabled = ChkPort2.IsChecked == true;
-
-    private async void OnConnectClick(object? sender, RoutedEventArgs e)
+    private async void OnConnectClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        if (_connected)
-        {
-            StopAll();
-            return;
-        }
+        if (_connected) { StopAll(); return; }
 
-        bool isServer    = RbServer.IsChecked == true;
-        int  captureIdx  = (CbCapture.SelectedItem  as DeviceItem)?.Index ?? -1;
-        int  playbackIdx = (CbPlayback.SelectedItem as DeviceItem)?.Index ?? -1;
-        int  port        = (int)(NudPort.Value ?? 5000);
+        bool   isServer    = _rbServer.IsChecked == true;
+        int    captureIdx  = (_cbCapture.SelectedItem  as DeviceItem)?.Index ?? -1;
+        int    playbackIdx = (_cbPlayback.SelectedItem as DeviceItem)?.Index ?? -1;
+        int    port        = (int)(_nudPort.Value ?? 5000);
 
         _engine?.Dispose();
         _engine = new AudioEngine();
-        _engine.StatusChanged     += msg => { AppendLog(msg); SetStatus(msg); };
-        _engine.Error             += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
+        _engine.StatusChanged      += msg => { AppendLog(msg); SetStatus(msg); };
+        _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
         _engine.ClientDisconnected += OnClientDisconnected;
-        _engine.ConfigReceived    += OnConfigReceived;
+        _engine.ConfigReceived     += OnConfigReceived;
 
         if (isServer)
         {
-            _engine.SerialConfig1 = GetSerialConfig(1);
-            _engine.SerialConfig2 = GetSerialConfig(2);
-            _serverPort        = port;
-            _serverCaptureIdx  = captureIdx;
-            _serverPlaybackIdx = playbackIdx;
-            _connected = true;
-            UpdateUI();
+            _engine.SerialConfig1  = GetSerialConfig(1);
+            _engine.SerialConfig2  = GetSerialConfig(2);
+            _serverPort            = port;
+            _serverCaptureIdx      = captureIdx;
+            _serverPlaybackIdx     = playbackIdx;
+            _connected = true; UpdateUI();
             await _engine.StartServerAsync(port, captureIdx, playbackIdx);
         }
         else
         {
-            var preset       = (AudioPreset?)CbPreset.SelectedItem ?? AudioPresets.Default;
-            bool noiseSuppress = ChkNoise.IsChecked == true;
-            string host      = TxtHost.Text ?? "127.0.0.1";
-            _connected = true;
-            UpdateUI();
-            await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSuppress);
+            var    preset      = (_cbPreset.SelectedItem as AudioPreset) ?? AudioPresets.Default;
+            bool   noiseSup    = _chkNoise.IsChecked == true;
+            string host        = _txtHost.Text ?? "127.0.0.1";
+            _connected = true; UpdateUI();
+            await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSup);
         }
     }
 
-    private async void OnRefreshClick(object? sender, RoutedEventArgs e)
+    private void OnFirewallClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        PopulateDevices();
-        PopulateSerialPorts();
-        AppendLog("Apparatenlijst vernieuwd.");
+        int port = (int)(_nudPort.Value ?? 5000);
+        try { FirewallHelper.OpenPort(port); AppendLog($"Firewall: poort {port} TCP geopend."); }
+        catch (Exception ex)               { AppendLog($"Firewall mislukt: {ex.Message}"); }
     }
-
-    private void OnFirewallClick(object? sender, RoutedEventArgs e)
-    {
-        int port = (int)(NudPort.Value ?? 5000);
-        try
-        {
-            FirewallHelper.OpenPort(port);
-            AppendLog($"Firewall: poort {port} TCP geopend.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Firewall mislukt: {ex.Message}");
-        }
-    }
-
-    // ── Engine events ─────────────────────────────────────────────────────────
 
     private void OnClientDisconnected()
     {
         Dispatcher.UIThread.Post(() =>
         {
-            if (!_restarting && RbServer.IsChecked == true)
+            if (!_restarting && _rbServer.IsChecked == true)
             {
                 _restarting = true;
                 AppendLog("Client verbroken — wachten op nieuwe verbinding...");
-                _engine?.Dispose();
-                _engine = null;
+                _engine?.Dispose(); _engine = null;
                 _connected = false;
                 _ = RestartServerAsync();
             }
@@ -252,15 +403,13 @@ public partial class MainWindow : Window
     {
         await Task.Delay(500);
         _engine = new AudioEngine();
-        _engine.StatusChanged     += msg => { AppendLog(msg); SetStatus(msg); };
-        _engine.Error             += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
+        _engine.StatusChanged      += msg => { AppendLog(msg); SetStatus(msg); };
+        _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
         _engine.ClientDisconnected += OnClientDisconnected;
-        _engine.ConfigReceived    += OnConfigReceived;
+        _engine.ConfigReceived     += OnConfigReceived;
         _engine.SerialConfig1 = GetSerialConfig(1);
         _engine.SerialConfig2 = GetSerialConfig(2);
-        _connected = true;
-        _restarting = false;
-        UpdateUI();
+        _connected = true; _restarting = false; UpdateUI();
         await _engine.StartServerAsync(_serverPort, _serverCaptureIdx, _serverPlaybackIdx);
     }
 
@@ -268,14 +417,12 @@ public partial class MainWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            if (RbClient.IsChecked == true)
+            if (_rbClient.IsChecked == true)
             {
-                // Show serial port info received from server
                 if (cfg.Port1.Enabled) AppendLog($"Server CAT: {cfg.Port1.ComPort} {cfg.Port1.Baud} baud → TCP {cfg.Port1.TcpPort}");
                 if (cfg.Port2.Enabled) AppendLog($"Server PTT: {cfg.Port2.ComPort} {cfg.Port2.Baud} baud → TCP {cfg.Port2.TcpPort}");
             }
-            // Update noise mode label
-            TblNoiseMode.Text = ChkNoise.IsChecked == true ? "(actief)" : "";
+            _tblNoiseMode.Text = _chkNoise.IsChecked == true ? "(actief)" : "";
         });
     }
 
@@ -283,53 +430,18 @@ public partial class MainWindow : Window
 
     private void StopAll()
     {
-        _engine?.Stop();
-        _engine?.Dispose();
-        _engine = null;
-
-        _cat?.Dispose();
-        _cat = null;
-        _ptt?.Dispose();
-        _ptt = null;
-
-        _connected = false;
-        _restarting = false;
-        UpdateUI();
-        SetStatus("Gestopt");
-        AppendLog("Verbinding beëindigd.");
+        _engine?.Stop(); _engine?.Dispose(); _engine = null;
+        _connected = false; _restarting = false;
+        UpdateUI(); SetStatus("Gestopt"); AppendLog("Verbinding beëindigd.");
     }
 
-    protected override void OnClosing(WindowClosingEventArgs e)
-    {
-        StopAll();
-        base.OnClosing(e);
-    }
+    protected override void OnClosing(WindowClosingEventArgs e) { StopAll(); base.OnClosing(e); }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private SerialPortConfig GetSerialConfig(int port)
-    {
-        if (port == 1)
-            return new SerialPortConfig
-            {
-                Enabled = ChkPort1.IsChecked == true,
-                ComPort = CbPort1Com.SelectedItem?.ToString() ?? "",
-                Baud    = (int)(NudPort1Baud.Value ?? 9600),
-                TcpPort = (int)(NudPort1Tcp.Value ?? 5001),
-            };
-        else
-            return new SerialPortConfig
-            {
-                Enabled = ChkPort2.IsChecked == true,
-                ComPort = CbPort2Com.SelectedItem?.ToString() ?? "",
-                Baud    = (int)(NudPort2Baud.Value ?? 9600),
-                TcpPort = (int)(NudPort2Tcp.Value ?? 5002),
-            };
-    }
+    private SerialPortConfig GetSerialConfig(int port) => port == 1
+        ? new SerialPortConfig { Enabled = _chkPort1.IsChecked == true, ComPort = _cbPort1Com.SelectedItem?.ToString() ?? "", Baud = (int)(_nudPort1Baud.Value ?? 9600), TcpPort = (int)(_nudPort1Tcp.Value ?? 5001) }
+        : new SerialPortConfig { Enabled = _chkPort2.IsChecked == true, ComPort = _cbPort2Com.SelectedItem?.ToString() ?? "", Baud = (int)(_nudPort2Baud.Value ?? 9600), TcpPort = (int)(_nudPort2Tcp.Value ?? 5002) };
 }
 
-/// <summary>Wrapper to display device name in ComboBox while keeping index.</summary>
-internal record DeviceItem(int Index, string Name)
-{
-    public override string ToString() => Name;
-}
+internal record DeviceItem(int Index, string Name) { public override string ToString() => Name; }

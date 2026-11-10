@@ -1,0 +1,3 @@
+<Application xmlns="https://github.com/avaloniaui/avalonia/xaml"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RadioBridge.App"/>
