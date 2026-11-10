@@ -110,9 +110,10 @@ public class AudioEngine : IDisposable
     private bool _disconnectFired;
 
     // ── Audio state ───────────────────────────────────────────────────────────
-    private AudioPreset     _preset  = AudioPresets.Default;
-    private readonly NoiseFilter _filter = new();
-    private readonly OpusCodec   _codec  = new();
+    private AudioPreset          _preset  = AudioPresets.Default;
+    private readonly NoiseFilter _filter  = new();
+    private readonly OpusCodec   _codec   = new();
+    private readonly ToneGenerator _tone  = new();
 
     // Native callbacks — must be kept alive (GC root) while audio is running
     private MiniAudioEngine.CaptureCallback?  _captureDelegate;
@@ -249,6 +250,23 @@ public class AudioEngine : IDisposable
         return JsonSerializer.Deserialize<BridgeConfig>(Encoding.UTF8.GetString(buf));
     }
 
+    // ── Tone injection ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Schakel de testtoon in of uit.
+    /// frequency: Hz (50–8000), amplitude: 0.0–1.0
+    /// </summary>
+    public void SetTone(bool enabled, float frequency = 1000f, float amplitude = 0.25f)
+    {
+        _tone.Enabled   = enabled;
+        _tone.Frequency = frequency;
+        _tone.Amplitude = amplitude;
+        if (_running)
+            Log(enabled
+                ? $"Testtoon: AAN  {frequency:F0} Hz  vol {amplitude * 100:F0}%"
+                : "Testtoon: UIT");
+    }
+
     // ── Noise toggle ─────────────────────────────────────────────────────────
 
     public void SetNoiseSuppression(bool enabled)
@@ -306,6 +324,7 @@ public class AudioEngine : IDisposable
         _filter.Initialize(noiseSuppress, _preset.SampleRate, _preset.Channels);
         _codec.Initialize(useOpus, _preset.SampleRate, _preset.Channels,
             _preset.BufferMs, opusBitrate);
+        _tone.Configure(_preset.SampleRate, _preset.Channels);
 
         // Buffer size in frames: BufferMs × SampleRate / 1000
         int bufFrames = (_preset.SampleRate * _preset.BufferMs) / 1000;
@@ -362,6 +381,9 @@ public class AudioEngine : IDisposable
             // Convert to byte[] for existing filter / codec APIs
             var bytes = new byte[byteLen];
             Buffer.BlockCopy(pcm, 0, bytes, 0, byteLen);
+
+            // Testtoon injecteren vóór filter en codec
+            _tone.Mix(bytes, byteLen);
 
             if (_filter.IsEnabled)
                 _filter.Process(bytes, byteLen, _preset.Channels);

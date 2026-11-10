@@ -45,6 +45,14 @@ public partial class MainWindow : Window
     private readonly NumericUpDown _nudPort2Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5002, Width = 90 };
     private readonly StackPanel    _spPort2      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
 
+    // Testtoon
+    private readonly CheckBox      _chkTone      = new() { Content = "Testtoon injecteren (sinusgolf)" };
+    private readonly Slider        _sldToneFreq  = new() { Minimum = 100, Maximum = 3000, Value = 1000, Width = 220, TickFrequency = 100, IsSnapToTickEnabled = true };
+    private readonly TextBlock     _tblToneFreq  = new() { Text = "1000 Hz", Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center, Width = 60 };
+    private readonly Slider        _sldToneVol   = new() { Minimum = 1, Maximum = 100, Value = 25, Width = 160, TickFrequency = 5, IsSnapToTickEnabled = true };
+    private readonly TextBlock     _tblToneVol   = new() { Text = "25%", Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center, Width = 40 };
+    private readonly StackPanel    _spToneSliders = new() { Orientation = Orientation.Vertical, Spacing = 6, IsEnabled = false, Margin = new Thickness(0,6,0,0) };
+
     // ── App state ─────────────────────────────────────────────────────────────
     private AudioEngine? _engine;
     private bool _connected;
@@ -154,6 +162,33 @@ public partial class MainWindow : Window
         root.Children.Add(Section("Serieel poort 2  (PTT)", new StackPanel
         {
             Children = { _chkPort2, _spPort2 }
+        }));
+
+        // Testtoon
+        _chkTone.IsCheckedChanged += OnToneChanged;
+        _sldToneFreq.PropertyChanged += (s, e) => {
+            if (e.Property.Name == "Value") {
+                _tblToneFreq.Text = $"{(int)_sldToneFreq.Value} Hz";
+                ApplyTone();
+            }
+        };
+        _sldToneVol.PropertyChanged += (s, e) => {
+            if (e.Property.Name == "Value") {
+                _tblToneVol.Text = $"{(int)_sldToneVol.Value}%";
+                ApplyTone();
+            }
+        };
+        _spToneSliders.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            Children = {
+                SimpleLabel("Frequentie:"), _sldToneFreq, _tblToneFreq,
+                SimpleLabel("  Volume:"),  _sldToneVol,  _tblToneVol
+            }
+        });
+        root.Children.Add(Section("🔊  Testtoon", new StackPanel
+        {
+            Children = { _chkTone, _spToneSliders }
         }));
 
         // Knoppen
@@ -356,6 +391,7 @@ public partial class MainWindow : Window
         _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
         _engine.ClientDisconnected += OnClientDisconnected;
         _engine.ConfigReceived     += OnConfigReceived;
+        ApplyTone();
 
         if (isServer)
         {
@@ -410,6 +446,7 @@ public partial class MainWindow : Window
         _engine.SerialConfig1 = GetSerialConfig(1);
         _engine.SerialConfig2 = GetSerialConfig(2);
         _connected = true; _restarting = false; UpdateUI();
+        ApplyTone();
         await _engine.StartServerAsync(_serverPort, _serverCaptureIdx, _serverPlaybackIdx);
     }
 
@@ -424,6 +461,24 @@ public partial class MainWindow : Window
             }
             _tblNoiseMode.Text = _chkNoise.IsChecked == true ? "(actief)" : "";
         });
+    }
+
+    // ── Testtoon ──────────────────────────────────────────────────────────────
+
+    private void OnToneChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool en = _chkTone.IsChecked == true;
+        _spToneSliders.IsEnabled = en;
+        ApplyTone();
+    }
+
+    private void ApplyTone()
+    {
+        if (_engine == null) return;
+        bool  en   = _chkTone.IsChecked == true;
+        float freq = (float)_sldToneFreq.Value;
+        float vol  = (float)_sldToneVol.Value / 100f;
+        _engine.SetTone(en, freq, vol);
     }
 
     // ── Stop ─────────────────────────────────────────────────────────────────
