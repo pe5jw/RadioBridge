@@ -27,10 +27,13 @@
   <!-- Native miniaudio shim — gekopieerd naar output naast de EXE -->
   <ItemGroup>
     <None Include="..\native\win-x64\radiobridge_audio.dll"
-          Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+          Condition="'$(RuntimeIdentifier)' == 'win-x64'"
           CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\native\linux-x64\radiobridge_audio.so"
-          Condition="$([MSBuild]::IsOSPlatform('Linux'))"
+          Condition="'$(RuntimeIdentifier)' == 'linux-x64'"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\native\linux-arm64\radiobridge_audio.so"
+          Condition="'$(RuntimeIdentifier)' == 'linux-arm64'"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
