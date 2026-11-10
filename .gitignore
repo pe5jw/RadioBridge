@@ -21,3 +21,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+arch/
+ham/
+*.jpg
+*.exe
