@@ -48,8 +48,8 @@ public partial class MainWindow : Window
     // Client virtuele COM (com0com / PTY)
     private readonly TextBlock     _tblVirtualInfo  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), FontSize = 11, TextWrapping = TextWrapping.Wrap };
     private readonly Button        _btnDetectCom0Com = new() { Content = "🔍  com0com detecteren", MinWidth = 160 };
-    private readonly ComboBox      _cbVCom1         = new() { Width = 120, PlaceholderText = "auto (PTY)" };
-    private readonly ComboBox      _cbVCom2         = new() { Width = 120, PlaceholderText = "auto (PTY)" };
+    private readonly ComboBox      _cbVCom1         = new() { Width = 150, PlaceholderText = "auto (PTY)", IsEditable = true };
+    private readonly ComboBox      _cbVCom2         = new() { Width = 150, PlaceholderText = "auto (PTY)", IsEditable = true };
     private readonly StackPanel    _spVComClient    = new() { Spacing = 6 };
 
     // Testtoon
@@ -438,8 +438,11 @@ public partial class MainWindow : Window
             string host        = _txtHost.Text ?? "127.0.0.1";
 
             // Virtuele COM poorten voor client (leeg = auto PTY op Linux)
-            _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port ?? "";
-            _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port ?? "";
+            // IsEditable ComboBox: typed tekst zit in Text, geselecteerd item in SelectedItem
+            _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port
+                                   ?? _cbVCom1.Text?.Trim() ?? "";
+            _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port
+                                   ?? _cbVCom2.Text?.Trim() ?? "";
 
             _connected = true; UpdateUI();
             await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSup);
@@ -562,11 +565,27 @@ public partial class MainWindow : Window
         }
         if (_cbVCom1.Items.Count > 0) { _cbVCom1.SelectedIndex = 0; _cbVCom2.SelectedIndex = Math.Min(1, _cbVCom2.Items.Count - 1); }
 
+        // Controleer of we echte COM-namen hebben (niet CNCA0 stijl)
+        bool hasRealNames = pairs.All(p =>
+            (p.PortA.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || p.PortA == "") &&
+            (p.PortB.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || p.PortB == ""));
+
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"✅  {pairs.Count} com0com paar(en) gevonden:");
-        foreach (var pair in pairs)
-            sb.AppendLine($"  Paar {pair.PairId}: logger → {pair.PortA}   RadioBridge → {pair.PortB}");
-        sb.Append("Selecteer hieronder welk paar voor CAT en PTT gebruikt wordt.");
+        if (hasRealNames)
+        {
+            sb.AppendLine($"✅  {pairs.Count} com0com paar(en) gevonden:");
+            foreach (var pair in pairs)
+                sb.AppendLine($"  Paar {pair.PairId}: logger → {pair.PortA}   RadioBridge → {pair.PortB}");
+            sb.Append("Selecteer hieronder welk paar voor CAT en PTT gebruikt wordt.");
+        }
+        else
+        {
+            sb.AppendLine($"⚠  {pairs.Count} paar(en) gevonden maar COM-nummers onbekend.");
+            sb.AppendLine("Voer de poortnamen handmatig in of open com0com Setup.");
+            sb.AppendLine();
+            sb.AppendLine("Registry dump (diagnose):");
+            sb.Append(VirtualSerialBridge.DebugRegistryDump());
+        }
         _tblVirtualInfo.Text = sb.ToString();
     }
 

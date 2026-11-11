@@ -214,59 +214,163 @@ public sealed class VirtualSerialBridge : IDisposable
 
     // ── com0com detectie (Windows) ────────────────────────────────────────────
 
+    // Registry-paden die com0com gebruikt (verschilt per versie)
+    private static readonly string[] Com0ComParamPaths =
+    {
+        @"SYSTEM\CurrentControlSet\Services\com0com\Parameters",
+        @"SYSTEM\CurrentControlSet\Enum\ROOT\PORTPAIR",          // com0com v3 soms
+    };
+
     /// <summary>
     /// Geeft een lijst van gevonden com0com null-modem paren terug.
-    /// Detecteert via registry (HKLM\SYSTEM\CurrentControlSet\Services\com0com\Parameters).
-    /// Elk paar: (insidePort, outsidePort) bijv. ("CNCA0"/"COM10", "CNCB0"/"COM11").
+    /// Elk paar heeft PortA (logger-kant) en PortB (RadioBridge-kant).
     /// </summary>
     public static List<Com0ComPair> DetectCom0ComPairs()
     {
         var pairs = new List<Com0ComPair>();
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return pairs;
 
+        // Methode 1: Parameters-subkey (com0com v2/v3 standaard)
+        pairs = DetectViaParametersKey();
+        if (pairs.Count > 0) return pairs;
+
+        // Methode 2: Device class GUID voor seriële poorten, gefilterd op com0com
+        pairs = DetectViaDeviceClass();
+        return pairs;
+    }
+
+    private static List<Com0ComPair> DetectViaParametersKey()
+    {
+        var pairs = new List<Com0ComPair>();
         try
         {
-            // Lees via registry — com0com slaat zijn poorten op onder deze key
             using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
                 @"SYSTEM\CurrentControlSet\Services\com0com\Parameters");
             if (key == null) return pairs;
 
             foreach (var subName in key.GetSubKeyNames())
             {
-                // Subkeys zijn "Port0", "Port1", "Port2", ... gekoppeld in paren
                 using var sub = key.OpenSubKey(subName);
                 if (sub == null) continue;
 
-                string? portName  = sub.GetValue("PortName")  as string; // bijv. "CNCA0"
-                string? realName  = sub.GetValue("RealPortName") as string; // bijv. "COM10"
-
+                // com0com v2: "PortName" = "CNCA0", optioneel "RealPortName" = "COM10"
+                // com0com v3: "PortName" direct het COM-nummer, of via apart value
+                string? portName = sub.GetValue("PortName") as string;
                 if (portName == null) continue;
 
-                // Bepaal paar-nummer uit naam (Port0+Port1 = paar 0, Port2+Port3 = paar 1)
-                int idx = int.TryParse(Regex.Match(subName, @"\d+").Value, out int i) ? i : -1;
-                if (idx < 0) continue;
+                // Haal het echte COM-nummer op — probeer meerdere value-namen
+                string? realName = sub.GetValue("RealPortName") as string
+                                ?? sub.GetValue("ComPort")      as string
+                                ?? sub.GetValue("SymbolicLink") as string;
 
+                // Als RealPortName er niet is maar PortName al "COMn" is, gebruik dat
+                string displayName = realName ?? portName;
+                // Normaliseer: "\\Device\\Serial3" → zoek COM-naam via Enum
+                if (displayName.StartsWith(@"\\Device\\", StringComparison.OrdinalIgnoreCase))
+                    displayName = portName; // val terug op CNCA0-naam
+
+                // Paar-index uit subkey naam: Port0,Port1 → paar 0; Port2,Port3 → paar 1
+                var m = Regex.Match(subName, @"\d+");
+                if (!m.Success) continue;
+                int idx    = int.Parse(m.Value);
                 int pairId = idx / 2;
                 bool isA   = (idx % 2) == 0;
 
-                // Zoek bestaand paar of maak nieuw
                 while (pairs.Count <= pairId) pairs.Add(new Com0ComPair(pairId));
-                var pair = pairs[pairId];
-
-                string displayName = realName ?? portName;
-
-                if (isA) pair.PortA = displayName;
-                else      pair.PortB = displayName;
+                if (isA) pairs[pairId].PortA = displayName;
+                else     pairs[pairId].PortB = displayName;
             }
         }
-        catch
-        {
-            // Registry niet bereikbaar of com0com niet geïnstalleerd
-        }
+        catch { }
 
-        // Filter lege paren
         pairs.RemoveAll(p => p.PortA == "" && p.PortB == "");
         return pairs;
+    }
+
+    private static List<Com0ComPair> DetectViaDeviceClass()
+    {
+        // Zoek via HKLM\SYSTEM\CurrentControlSet\Enum\ROOT\PORTPAIR
+        // of via de seriële poort class GUID {4D36E978-...}
+        var pairs  = new List<Com0ComPair>();
+        var cncPorts = new List<(string cncName, string comName)>();
+
+        try
+        {
+            // Seriële poort device-klasse
+            using var classKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E978-E325-11CE-BFC1-08002BE10318}");
+            if (classKey == null) return pairs;
+
+            foreach (var subName in classKey.GetSubKeyNames())
+            {
+                using var dev = classKey.OpenSubKey(subName);
+                if (dev == null) continue;
+
+                string? provider = dev.GetValue("ProviderName") as string ?? "";
+                if (!provider.Contains("com0com", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string? portName = dev.GetValue("PortName") as string; // bijv. "COM10"
+                string? friendlyName = dev.GetValue("FriendlyName") as string ?? ""; // bijv. "com0com - serial port emulator (CNCA0)"
+
+                if (portName == null) continue;
+
+                // Haal CNC-naam uit FriendlyName
+                var cm = Regex.Match(friendlyName, @"(CNC[AB]\d+)", RegexOptions.IgnoreCase);
+                string cncName = cm.Success ? cm.Groups[1].Value : portName;
+
+                cncPorts.Add((cncName, portName));
+            }
+        }
+        catch { }
+
+        // Groepeer: CNCA0↔CNCB0 = paar 0, CNCA1↔CNCB1 = paar 1
+        foreach (var (cncName, comName) in cncPorts)
+        {
+            var nm = Regex.Match(cncName, @"CNC([AB])(\d+)", RegexOptions.IgnoreCase);
+            if (!nm.Success) continue;
+
+            bool isA   = nm.Groups[1].Value.Equals("A", StringComparison.OrdinalIgnoreCase);
+            int pairId = int.Parse(nm.Groups[2].Value);
+
+            while (pairs.Count <= pairId) pairs.Add(new Com0ComPair(pairId));
+            if (isA) pairs[pairId].PortA = comName;
+            else     pairs[pairId].PortB = comName;
+        }
+
+        pairs.RemoveAll(p => p.PortA == "" && p.PortB == "");
+        return pairs;
+    }
+
+    /// <summary>
+    /// Debug: geeft alle ruwe registry-waarden terug voor diagnose.
+    /// </summary>
+    public static string DebugRegistryDump()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return "Niet Windows.";
+
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\com0com\Parameters");
+            if (key == null) { sb.AppendLine("Parameters key niet gevonden."); }
+            else
+            {
+                sb.AppendLine($"Parameters subkeys: {string.Join(", ", key.GetSubKeyNames())}");
+                foreach (var sn in key.GetSubKeyNames())
+                {
+                    using var sub = key.OpenSubKey(sn);
+                    if (sub == null) continue;
+                    sb.Append($"  [{sn}] ");
+                    foreach (var vn in sub.GetValueNames())
+                        sb.Append($"{vn}={sub.GetValue(vn)}  ");
+                    sb.AppendLine();
+                }
+            }
+        }
+        catch (Exception ex) { sb.AppendLine($"Fout: {ex.Message}"); }
+        return sb.ToString();
     }
 
     /// <summary>
