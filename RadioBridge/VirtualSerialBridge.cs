@@ -230,13 +230,18 @@ public sealed class VirtualSerialBridge : IDisposable
         var pairs = new List<Com0ComPair>();
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return pairs;
 
-        // Methode 1: Parameters-subkey (com0com v2/v3 standaard)
-        pairs = DetectViaParametersKey();
-        if (pairs.Count > 0) return pairs;
-
-        // Methode 2: Device class GUID voor seriële poorten, gefilterd op com0com
+        // Methode 1: Device class GUID — geeft altijd echte COM-nummers + CNC-naam
         pairs = DetectViaDeviceClass();
-        return pairs;
+        if (pairs.Count > 0 && pairs.All(p =>
+            p.PortA.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+            p.PortB.StartsWith("COM", StringComparison.OrdinalIgnoreCase)))
+            return pairs;
+
+        // Methode 2: Parameters-subkey (fallback, geeft soms alleen CNCA-namen)
+        var paramPairs = DetectViaParametersKey();
+        if (paramPairs.Count > 0) return paramPairs;
+
+        return pairs; // terug naar wat methode 1 had, ook al zijn het CNC-namen
     }
 
     private static List<Com0ComPair> DetectViaParametersKey()
@@ -323,14 +328,14 @@ public sealed class VirtualSerialBridge : IDisposable
         }
         catch { }
 
-        // Groepeer: CNCA0↔CNCB0 = paar 0, CNCA1↔CNCB1 = paar 1
+        // Groepeer: CNCA1↔CNCB1 = paar 1, CNCA2↔CNCB2 = paar 2, etc.
         foreach (var (cncName, comName) in cncPorts)
         {
             var nm = Regex.Match(cncName, @"CNC([AB])(\d+)", RegexOptions.IgnoreCase);
             if (!nm.Success) continue;
 
             bool isA   = nm.Groups[1].Value.Equals("A", StringComparison.OrdinalIgnoreCase);
-            int pairId = int.Parse(nm.Groups[2].Value);
+            int pairId = int.Parse(nm.Groups[2].Value); // 1-based zoals com0com aanmaakt
 
             while (pairs.Count <= pairId) pairs.Add(new Com0ComPair(pairId));
             if (isA) pairs[pairId].PortA = comName;
