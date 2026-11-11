@@ -102,9 +102,40 @@ foreach ($asset in @("RadioBridge-$version-win-x64.zip", "RadioBridge-$version-l
     gh release delete-asset $version $asset --yes 2>$null | Out-Null
 }
 
-# Upload
+# Upload zips
 gh release upload $version $winZip $linZip --clobber
 if ($LASTEXITCODE -ne 0) { Write-Error "Upload mislukt! Controleer: gh auth status"; exit 1 }
+
+# Update release description
+Write-Host "→ Release notes bijwerken..." -ForegroundColor Yellow
+$notes = @"
+## RadioBridge $version
+
+### Wat is nieuw
+- **Native audio engine**: NAudio vervangen door [miniaudio](https://miniaud.io) C native shim — geen externe dependencies meer
+- **Volledige duplex audio**: capture + playback tegelijk, Opus codec, RNNoise ruisonderdrukking
+- **Cross-platform**: Windows x64 + Linux x64
+- **Serieel over TCP**: CAT en PTT poorten worden doorgestuurd naar de client
+- **com0com ondersteuning**: automatische detectie van virtuele COM-paren (Windows)
+- **Linux PTY**: automatisch /dev/pts/N aanmaken voor logger-koppeling
+- **VU-meter**: live opname- en afspeelniveau met kleurcodering (groen/geel/rood)
+- **Volume regelaars**: opname en afspelen apart instelbaar 0–400%
+- **2-kolom layout**: links audio, rechts poorten — server en client tonen elk alleen relevante instellingen
+- **Server herstart**: na client-disconnect worden audio-instellingen opnieuw ingelezen
+- **Testtoon**: sinusgolf injecteren voor verbindingstest
+
+### Download
+| Platform    | Bestand                            |
+|-------------|------------------------------------|
+| Windows x64 | ``RadioBridge-$version-win-x64.zip`` |
+| Linux x64   | ``RadioBridge-$version-linux-x64.zip`` |
+
+### Vereisten
+- Windows: [com0com](https://sourceforge.net/projects/com0com/) voor virtuele COM-paren (optioneel)
+- Linux: geen extra drivers nodig
+"@
+gh release edit $version --notes $notes
+if ($LASTEXITCODE -ne 0) { Write-Host "⚠  Release notes bijwerken mislukt (niet kritiek)." -ForegroundColor Yellow }
 
 Write-Host ""
 Write-Host "=== Klaar! ===" -ForegroundColor Green
