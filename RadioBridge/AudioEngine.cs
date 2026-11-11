@@ -105,6 +105,15 @@ public class AudioEngine : IDisposable
     private TcpClient?     _tcpClient;
     private NetworkStream? _stream;
 
+    // ── Virtuele seriële poorten (client kant) ────────────────────────────────
+    private VirtualSerialBridge? _vSerial1;
+    private VirtualSerialBridge? _vSerial2;
+
+    /// <summary>Welk com0com "inside" poort voor CAT (Windows). Leeg = auto PTY (Linux).</summary>
+    public string VirtualComPort1 { get; set; } = "";
+    /// <summary>Welk com0com "inside" poort voor PTT (Windows). Leeg = auto PTY (Linux).</summary>
+    public string VirtualComPort2 { get; set; } = "";
+
     private CancellationTokenSource _cts = new();
     private bool _running;
     private bool _disconnectFired;
@@ -206,7 +215,11 @@ public class AudioEngine : IDisposable
             Log($"Configuratie verstuurd: {(preset.UseOpus ? $"Opus {preset.OpusBitrate / 1000}kbps" : "PCM")}");
 
             var cfgBack = await ReceiveConfigAsync(_cts.Token);
-            if (cfgBack != null) ConfigReceived?.Invoke(cfgBack);
+            if (cfgBack != null)
+            {
+                ConfigReceived?.Invoke(cfgBack);
+                await StartVirtualSerialAsync(host, cfgBack);
+            }
 
             StartAudio(captureIdx, playbackIdx, noiseSuppress, preset.UseOpus, preset.OpusBitrate);
         }
@@ -250,6 +263,31 @@ public class AudioEngine : IDisposable
         return JsonSerializer.Deserialize<BridgeConfig>(Encoding.UTF8.GetString(buf));
     }
 
+    // ── Virtuele seriële poorten (client) ────────────────────────────────────
+
+    private async Task StartVirtualSerialAsync(string host, BridgeConfig cfg)
+    {
+        if (cfg.Port1.Enabled)
+        {
+            _vSerial1 = new VirtualSerialBridge();
+            _vSerial1.StatusChanged += msg => Log(msg);
+            _vSerial1.Error         += msg => Log($"⚠ {msg}");
+            await _vSerial1.StartAsync(host, cfg.Port1.TcpPort, VirtualComPort1);
+            if (!string.IsNullOrEmpty(_vSerial1.VirtualPortName))
+                Log($"CAT virtuele poort: {_vSerial1.VirtualPortName}");
+        }
+
+        if (cfg.Port2.Enabled)
+        {
+            _vSerial2 = new VirtualSerialBridge();
+            _vSerial2.StatusChanged += msg => Log(msg);
+            _vSerial2.Error         += msg => Log($"⚠ {msg}");
+            await _vSerial2.StartAsync(host, cfg.Port2.TcpPort, VirtualComPort2);
+            if (!string.IsNullOrEmpty(_vSerial2.VirtualPortName))
+                Log($"PTT virtuele poort: {_vSerial2.VirtualPortName}");
+        }
+    }
+
     // ── Tone injection ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -291,6 +329,10 @@ public class AudioEngine : IDisposable
         _playbackDelegate = null;
 
         lock (_playLock) { _playQueue.Clear(); _playQueueBytes = 0; }
+
+        try { _vSerial1?.Stop(); _vSerial1?.Dispose(); } catch { }
+        try { _vSerial2?.Stop(); _vSerial2?.Dispose(); } catch { }
+        _vSerial1 = null; _vSerial2 = null;
 
         try { _stream?.Close(); } catch { }
         _stream = null;

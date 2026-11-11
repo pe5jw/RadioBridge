@@ -45,6 +45,13 @@ public partial class MainWindow : Window
     private readonly NumericUpDown _nudPort2Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5002, Width = 90 };
     private readonly StackPanel    _spPort2      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
 
+    // Client virtuele COM (com0com / PTY)
+    private readonly TextBlock     _tblVirtualInfo  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), FontSize = 11, TextWrapping = TextWrapping.Wrap };
+    private readonly Button        _btnDetectCom0Com = new() { Content = "🔍  com0com detecteren", MinWidth = 160 };
+    private readonly ComboBox      _cbVCom1         = new() { Width = 120, PlaceholderText = "auto (PTY)" };
+    private readonly ComboBox      _cbVCom2         = new() { Width = 120, PlaceholderText = "auto (PTY)" };
+    private readonly StackPanel    _spVComClient    = new() { Spacing = 6 };
+
     // Testtoon
     private readonly CheckBox      _chkTone      = new() { Content = "Testtoon injecteren (sinusgolf)" };
     private readonly Slider        _sldToneFreq  = new() { Minimum = 100, Maximum = 3000, Value = 1000, Width = 220, TickFrequency = 100, IsSnapToTickEnabled = true };
@@ -163,6 +170,24 @@ public partial class MainWindow : Window
         {
             Children = { _chkPort2, _spPort2 }
         }));
+
+        // Client virtuele COM poorten
+        _btnDetectCom0Com.Click += OnDetectCom0Com;
+        _spVComClient.Children.Add(_tblVirtualInfo);
+        _spVComClient.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            Children    = { _btnDetectCom0Com }
+        });
+        _spVComClient.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            Children    = {
+                SimpleLabel("CAT virtuele COM:"), _cbVCom1,
+                SimpleLabel("  PTT virtuele COM:"), _cbVCom2
+            }
+        });
+        root.Children.Add(Section("💻  Client virtuele COM poorten", _spVComClient));
 
         // Testtoon
         _chkTone.IsCheckedChanged += OnToneChanged;
@@ -309,6 +334,9 @@ public partial class MainWindow : Window
         _spPort1.IsEnabled   = isServer && _chkPort1.IsChecked == true;
         _spPort2.IsEnabled   = isServer && _chkPort2.IsChecked == true;
 
+        // Virtuele COM sectie alleen relevant voor client
+        _spVComClient.IsVisible = !isServer;
+
         _btnConnect.Content    = _connected ? "Verbreken" : (isServer ? "Server starten" : "Verbinden");
         _btnConnect.Background = _connected
             ? new SolidColorBrush(Color.Parse("#8b1a1a"))
@@ -408,6 +436,11 @@ public partial class MainWindow : Window
             var    preset      = (_cbPreset.SelectedItem as AudioPreset) ?? AudioPresets.Default;
             bool   noiseSup    = _chkNoise.IsChecked == true;
             string host        = _txtHost.Text ?? "127.0.0.1";
+
+            // Virtuele COM poorten voor client (leeg = auto PTY op Linux)
+            _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port ?? "";
+            _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port ?? "";
+
             _connected = true; UpdateUI();
             await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSup);
         }
@@ -458,6 +491,8 @@ public partial class MainWindow : Window
             {
                 if (cfg.Port1.Enabled) AppendLog($"Server CAT: {cfg.Port1.ComPort} {cfg.Port1.Baud} baud → TCP {cfg.Port1.TcpPort}");
                 if (cfg.Port2.Enabled) AppendLog($"Server PTT: {cfg.Port2.ComPort} {cfg.Port2.Baud} baud → TCP {cfg.Port2.TcpPort}");
+
+                // Virtuele poort namen worden gelogged door AudioEngine zodra ze aangemaakt zijn
             }
             _tblNoiseMode.Text = _chkNoise.IsChecked == true ? "(actief)" : "";
         });
@@ -481,6 +516,60 @@ public partial class MainWindow : Window
         _engine.SetTone(en, freq, vol);
     }
 
+    // ── Virtuele COM (com0com / PTY) ──────────────────────────────────────────
+
+    private void OnDetectCom0Com(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows);
+
+        if (!isWindows)
+        {
+            // Linux: PTY wordt automatisch aangemaakt, geen detectie nodig
+            _tblVirtualInfo.Text = "Linux: een PTY (/dev/pts/N) wordt automatisch aangemaakt zodra je verbindt. " +
+                                   "Je hoeft hier niets in te stellen — de poort wordt in het logvenster weergegeven.";
+            _cbVCom1.Items.Clear();
+            _cbVCom2.Items.Clear();
+            return;
+        }
+
+        // Windows: zoek com0com paren
+        if (!VirtualSerialBridge.IsCom0ComInstalled())
+        {
+            _tblVirtualInfo.Text = "⚠  com0com is niet geïnstalleerd. Download via: https://sourceforge.net/projects/com0com/\n" +
+                                   "Na installatie opnieuw detecteren.";
+            return;
+        }
+
+        var pairs = VirtualSerialBridge.DetectCom0ComPairs();
+        if (pairs.Count == 0)
+        {
+            _tblVirtualInfo.Text = "com0com is geïnstalleerd maar er zijn geen poortparen gevonden. " +
+                                   "Open de com0com setup en maak een paar aan.";
+            return;
+        }
+
+        // Vul dropdowns: de "inside" poort (PortB) is voor RadioBridge, "outside" (PortA) voor de logger
+        _cbVCom1.Items.Clear();
+        _cbVCom2.Items.Clear();
+        foreach (var pair in pairs)
+        {
+            string inside  = string.IsNullOrEmpty(pair.PortB) ? pair.PortA : pair.PortB;
+            string outside = string.IsNullOrEmpty(pair.PortA) ? pair.PortB : pair.PortA;
+            string label   = $"{inside}  (logger→ {outside})";
+            _cbVCom1.Items.Add(new VComItem(inside, label));
+            _cbVCom2.Items.Add(new VComItem(inside, label));
+        }
+        if (_cbVCom1.Items.Count > 0) { _cbVCom1.SelectedIndex = 0; _cbVCom2.SelectedIndex = Math.Min(1, _cbVCom2.Items.Count - 1); }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"✅  {pairs.Count} com0com paar(en) gevonden:");
+        foreach (var pair in pairs)
+            sb.AppendLine($"  Paar {pair.PairId}: logger → {pair.PortA}   RadioBridge → {pair.PortB}");
+        sb.Append("Selecteer hieronder welk paar voor CAT en PTT gebruikt wordt.");
+        _tblVirtualInfo.Text = sb.ToString();
+    }
+
     // ── Stop ─────────────────────────────────────────────────────────────────
 
     private void StopAll()
@@ -500,3 +589,4 @@ public partial class MainWindow : Window
 }
 
 internal record DeviceItem(int Index, string Name) { public override string ToString() => Name; }
+internal record VComItem(string Port, string Label)  { public override string ToString() => Label; }
