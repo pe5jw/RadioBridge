@@ -48,10 +48,8 @@ public partial class MainWindow : Window
     // Client virtuele COM (com0com / PTY)
     private readonly TextBlock     _tblVirtualInfo  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), FontSize = 11, TextWrapping = TextWrapping.Wrap };
     private readonly Button        _btnDetectCom0Com = new() { Content = "🔍  com0com detecteren", MinWidth = 160 };
-    private readonly ComboBox      _cbVCom1         = new() { Width = 130, PlaceholderText = "— kies —" };
-    private readonly ComboBox      _cbVCom2         = new() { Width = 130, PlaceholderText = "— kies —" };
-    private readonly TextBox       _txtVCom1        = new() { Width = 80, Watermark = "of typ COM#" };
-    private readonly TextBox       _txtVCom2        = new() { Width = 80, Watermark = "of typ COM#" };
+    private readonly ComboBox      _cbVCom1         = new() { MinWidth = 220 };
+    private readonly ComboBox      _cbVCom2         = new() { MinWidth = 220 };
     private readonly StackPanel    _spVComClient    = new() { Spacing = 6 };
 
     // Testtoon
@@ -183,10 +181,12 @@ public partial class MainWindow : Window
         });
         _spVComClient.Children.Add(new StackPanel
         {
-            Orientation = Orientation.Horizontal, Spacing = 8,
+            Orientation = Orientation.Vertical, Spacing = 6,
             Children    = {
-                SimpleLabel("CAT:"), _cbVCom1, _txtVCom1,
-                SimpleLabel("  PTT:"), _cbVCom2, _txtVCom2
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8,
+                    Children = { SimpleLabel("CAT (sturing):"), _cbVCom1 } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8,
+                    Children = { SimpleLabel("PTT (zenden): "), _cbVCom2 } }
             }
         });
         root.Children.Add(Section("💻  Client virtuele COM poorten", _spVComClient));
@@ -439,12 +439,9 @@ public partial class MainWindow : Window
             bool   noiseSup    = _chkNoise.IsChecked == true;
             string host        = _txtHost.Text ?? "127.0.0.1";
 
-            // Virtuele COM poorten voor client (leeg = auto PTY op Linux)
-            // Dropdown heeft voorkeur; TextBox als handmatige override
-            _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port
-                                   ?? _txtVCom1.Text?.Trim() ?? "";
-            _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port
-                                   ?? _txtVCom2.Text?.Trim() ?? "";
+            // Virtuele COM poorten voor client (leeg = niet gebruiken / auto PTY op Linux)
+            _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port ?? "";
+            _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port ?? "";
 
             _connected = true; UpdateUI();
             await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSup);
@@ -562,18 +559,27 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Vul dropdowns: de "inside" poort (PortB) is voor RadioBridge, "outside" (PortA) voor de logger
+        // Vul dropdowns
+        // PortA = "outside" = logger-kant, PortB = "inside" = RadioBridge-kant
         _cbVCom1.Items.Clear();
         _cbVCom2.Items.Clear();
+
+        // Eerste optie: niet gebruiken
+        _cbVCom1.Items.Add(new VComItem("", "— niet gebruiken —"));
+        _cbVCom2.Items.Add(new VComItem("", "— niet gebruiken —"));
+
         foreach (var pair in pairs)
         {
-            string inside  = string.IsNullOrEmpty(pair.PortB) ? pair.PortA : pair.PortB;
-            string outside = string.IsNullOrEmpty(pair.PortA) ? pair.PortB : pair.PortA;
-            string label   = $"{inside}  (logger→ {outside})";
-            _cbVCom1.Items.Add(new VComItem(inside, label));
-            _cbVCom2.Items.Add(new VComItem(inside, label));
+            if (pair.PortA == "" || pair.PortB == "") continue;
+            // RadioBridge gebruikt PortB (inside), logger verbindt op PortA (outside)
+            string label = $"{pair.PortB}  ←→  logger op {pair.PortA}";
+            _cbVCom1.Items.Add(new VComItem(pair.PortB, label));
+            _cbVCom2.Items.Add(new VComItem(pair.PortB, label));
         }
-        if (_cbVCom1.Items.Count > 0) { _cbVCom1.SelectedIndex = 0; _cbVCom2.SelectedIndex = Math.Min(1, _cbVCom2.Items.Count - 1); }
+
+        // Selecteer eerste paar voor CAT, tweede voor PTT
+        _cbVCom1.SelectedIndex = pairs.Count > 0 ? 1 : 0;
+        _cbVCom2.SelectedIndex = pairs.Count > 1 ? 2 : 0;
 
         // Controleer of we echte COM-namen hebben (niet CNCA0 stijl)
         bool hasRealNames = pairs.All(p =>
