@@ -476,6 +476,13 @@ public partial class MainWindow : Window
     private async Task RestartServerAsync()
     {
         await Task.Delay(500);
+
+        // Lees audio-apparaten opnieuw uit de UI — gebruiker kan ze gewijzigd hebben
+        int captureIdx  = (_cbCapture.SelectedItem  as DeviceItem)?.Index ?? _serverCaptureIdx;
+        int playbackIdx = (_cbPlayback.SelectedItem as DeviceItem)?.Index ?? _serverPlaybackIdx;
+        _serverCaptureIdx  = captureIdx;
+        _serverPlaybackIdx = playbackIdx;
+
         _engine = new AudioEngine();
         _engine.StatusChanged      += msg => { AppendLog(msg); SetStatus(msg); };
         _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
@@ -485,7 +492,7 @@ public partial class MainWindow : Window
         _engine.SerialConfig2 = GetSerialConfig(2);
         _connected = true; _restarting = false; UpdateUI();
         ApplyTone();
-        await _engine.StartServerAsync(_serverPort, _serverCaptureIdx, _serverPlaybackIdx);
+        await _engine.StartServerAsync(_serverPort, captureIdx, playbackIdx);
     }
 
     private void OnConfigReceived(BridgeConfig cfg)
