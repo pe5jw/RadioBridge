@@ -31,7 +31,13 @@ public static class AudioPresets
 {
     public static readonly AudioPreset[] All =
     [
-        // ── PCM presets (geen compressie) ────────────────────────────────────
+        // ── Lage latency presets (10ms) — beste voor lokaal netwerk ─────────
+        new("⚡ Opus Spraak LL  — 16kHz mono   10ms   16 kbps",  16000, 16, 1,  10,  20, true, 16000),
+        new("⚡ Opus SSB LL     — 48kHz mono   10ms   32 kbps",  48000, 16, 1,  10,  20, true, 32000),
+        new("⚡ PCM Spraak LL   — 16kHz 16bit mono   10ms ~256 kbps", 16000, 16, 1, 10, 20),
+        new("⚡ PCM SSB LL      — 48kHz 16bit mono   10ms ~768 kbps", 48000, 16, 1, 10, 20),
+
+        // ── Standaard presets (20ms) ─────────────────────────────────────────
         new("PCM  Telefoon    —  8kHz 16bit mono   20ms  ~128 kbps",   8000, 16, 1,  20,  40),
         new("PCM  Spraak      — 16kHz 16bit mono   20ms  ~256 kbps",  16000, 16, 1,  20,  40),
         new("PCM  SSB mono    — 48kHz 16bit mono   20ms  ~768 kbps",  48000, 16, 1,  20,  40),
@@ -45,14 +51,13 @@ public static class AudioPresets
         new("Opus SSB mono    — 48kHz mono   20ms   24 kbps",  48000, 16, 1,  20,  40, true, 24000),
         new("Opus SSB mono    — 48kHz mono   20ms   32 kbps",  48000, 16, 1,  20,  40, true, 32000),
         new("Opus SSB mono    — 48kHz mono   20ms   64 kbps",  48000, 16, 1,  20,  40, true, 64000),
-        new("Opus SSB mono    — 48kHz mono   10ms   32 kbps",  48000, 16, 1,  10,  20, true, 32000),
         new("Opus SSB stereo  — 48kHz stereo 20ms   64 kbps",  48000, 16, 2,  20,  40, true, 64000),
         new("Opus SSB stereo  — 48kHz stereo 20ms  128 kbps",  48000, 16, 2,  20,  40, true,128000),
         new("Opus RNNoise     — 48kHz mono   20ms   32 kbps",  48000, 16, 1,  20,  40, true, 32000),
         new("Opus RNNoise     — 48kHz mono   10ms   32 kbps",  48000, 16, 1,  10,  20, true, 32000),
     ];
 
-    public static AudioPreset Default => All[6]; // Opus Spraak 16kHz mono 20ms 12kbps
+    public static AudioPreset Default => All[0]; // ⚡ Opus Spraak LL 16kHz 10ms
 
     public static AudioPreset FindOrCreate(int sampleRate, int bits, int channels,
         int bufferMs, int latencyMs, bool useOpus, int opusBitrate)
@@ -131,7 +136,8 @@ public class AudioEngine : IDisposable
     // Playback ring-buffer (lock-free SPSC approximation via byte queue)
     private readonly object _playLock  = new();
     private readonly Queue<byte[]> _playQueue = new();
-    private const int MaxPlayQueueBytes = 192_000; // ~1 s at 48kHz 16bit mono
+    // Max queue: 3 frames à 20ms = 60ms buffer — daarboven droppen om latency te beperken
+    private int _maxPlayQueueBytes = 1; // wordt ingesteld in StartAudio op 3 × frameBytes
     private int _playQueueBytes;
 
     // ── Gain (volume) ─────────────────────────────────────────────────────────
@@ -387,6 +393,10 @@ public class AudioEngine : IDisposable
         // Buffer size in frames: BufferMs × SampleRate / 1000
         int bufFrames = (_preset.SampleRate * _preset.BufferMs) / 1000;
 
+        // Max playback queue: 3 frames — daarboven droppen om latency klein te houden
+        int frameBytes = bufFrames * _preset.Channels * 2; // 16-bit PCM
+        _maxPlayQueueBytes = frameBytes * 3;
+
         // Keep delegates alive (GC root) for the duration of audio streaming
         _captureDelegate  = OnCapture;
         _playbackDelegate = OnPlayback;
@@ -626,14 +636,11 @@ public class AudioEngine : IDisposable
     {
         lock (_playLock)
         {
-            if (_playQueueBytes + data.Length > MaxPlayQueueBytes)
+            // Drop frames tot de queue weer klein genoeg is
+            while (_playQueueBytes + data.Length > _maxPlayQueueBytes && _playQueue.Count > 0)
             {
-                // Overflow: drop oldest frame
-                if (_playQueue.Count > 0)
-                {
-                    var old = _playQueue.Dequeue();
-                    _playQueueBytes -= old.Length;
-                }
+                var old = _playQueue.Dequeue();
+                _playQueueBytes -= old.Length;
             }
             _playQueue.Enqueue(data);
             _playQueueBytes += data.Length;
