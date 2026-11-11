@@ -48,16 +48,16 @@ public partial class MainWindow : Window
 
     // Serial port 1
     private readonly CheckBox      _chkPort1     = new() { Content = "Inschakelen" };
-    private readonly ComboBox      _cbPort1Com   = new() { Width = 110 };
-    private readonly NumericUpDown _nudPort1Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, Width = 130 };
-    private readonly NumericUpDown _nudPort1Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5001, Width = 125 };
+    private readonly ComboBox      _cbPort1Com   = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumericUpDown _nudPort1Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumericUpDown _nudPort1Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5001, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly StackPanel    _spPort1      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
 
     // Serial port 2
     private readonly CheckBox      _chkPort2     = new() { Content = "Inschakelen" };
-    private readonly ComboBox      _cbPort2Com   = new() { Width = 110 };
-    private readonly NumericUpDown _nudPort2Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, Width = 130 };
-    private readonly NumericUpDown _nudPort2Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5002, Width = 125 };
+    private readonly ComboBox      _cbPort2Com   = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumericUpDown _nudPort2Baud = new() { Minimum = 300, Maximum = 115200, Value = 9600, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumericUpDown _nudPort2Tcp  = new() { Minimum = 1024, Maximum = 65535, Value = 5002, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly StackPanel    _spPort2      = new() { Orientation = Orientation.Horizontal, Spacing = 8, IsEnabled = false, Margin = new Thickness(0,4,0,0) };
 
     // Client virtuele COM (com0com / PTY)
