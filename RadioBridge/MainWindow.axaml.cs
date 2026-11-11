@@ -48,8 +48,10 @@ public partial class MainWindow : Window
     // Client virtuele COM (com0com / PTY)
     private readonly TextBlock     _tblVirtualInfo  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), FontSize = 11, TextWrapping = TextWrapping.Wrap };
     private readonly Button        _btnDetectCom0Com = new() { Content = "🔍  com0com detecteren", MinWidth = 160 };
-    private readonly ComboBox      _cbVCom1         = new() { Width = 150, PlaceholderText = "auto (PTY)", IsEditable = true };
-    private readonly ComboBox      _cbVCom2         = new() { Width = 150, PlaceholderText = "auto (PTY)", IsEditable = true };
+    private readonly ComboBox      _cbVCom1         = new() { Width = 130, PlaceholderText = "— kies —" };
+    private readonly ComboBox      _cbVCom2         = new() { Width = 130, PlaceholderText = "— kies —" };
+    private readonly TextBox       _txtVCom1        = new() { Width = 80, Watermark = "of typ COM#" };
+    private readonly TextBox       _txtVCom2        = new() { Width = 80, Watermark = "of typ COM#" };
     private readonly StackPanel    _spVComClient    = new() { Spacing = 6 };
 
     // Testtoon
@@ -183,8 +185,8 @@ public partial class MainWindow : Window
         {
             Orientation = Orientation.Horizontal, Spacing = 8,
             Children    = {
-                SimpleLabel("CAT virtuele COM:"), _cbVCom1,
-                SimpleLabel("  PTT virtuele COM:"), _cbVCom2
+                SimpleLabel("CAT:"), _cbVCom1, _txtVCom1,
+                SimpleLabel("  PTT:"), _cbVCom2, _txtVCom2
             }
         });
         root.Children.Add(Section("💻  Client virtuele COM poorten", _spVComClient));
@@ -438,11 +440,11 @@ public partial class MainWindow : Window
             string host        = _txtHost.Text ?? "127.0.0.1";
 
             // Virtuele COM poorten voor client (leeg = auto PTY op Linux)
-            // IsEditable ComboBox: typed tekst zit in Text, geselecteerd item in SelectedItem
+            // Dropdown heeft voorkeur; TextBox als handmatige override
             _engine.VirtualComPort1 = (_cbVCom1.SelectedItem as VComItem)?.Port
-                                   ?? _cbVCom1.Text?.Trim() ?? "";
+                                   ?? _txtVCom1.Text?.Trim() ?? "";
             _engine.VirtualComPort2 = (_cbVCom2.SelectedItem as VComItem)?.Port
-                                   ?? _cbVCom2.Text?.Trim() ?? "";
+                                   ?? _txtVCom2.Text?.Trim() ?? "";
 
             _connected = true; UpdateUI();
             await _engine.StartClientAsync(host, port, captureIdx, playbackIdx, preset, noiseSup);
@@ -521,6 +523,7 @@ public partial class MainWindow : Window
 
     // ── Virtuele COM (com0com / PTY) ──────────────────────────────────────────
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416")]
     private void OnDetectCom0Com(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(

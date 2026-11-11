@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -225,6 +226,7 @@ public sealed class VirtualSerialBridge : IDisposable
     /// Geeft een lijst van gevonden com0com null-modem paren terug.
     /// Elk paar heeft PortA (logger-kant) en PortB (RadioBridge-kant).
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416")]
     public static List<Com0ComPair> DetectCom0ComPairs()
     {
         var pairs = new List<Com0ComPair>();
@@ -244,6 +246,7 @@ public sealed class VirtualSerialBridge : IDisposable
         return pairs; // terug naar wat methode 1 had, ook al zijn het CNC-namen
     }
 
+    [SupportedOSPlatform("windows")]
     private static List<Com0ComPair> DetectViaParametersKey()
     {
         var pairs = new List<Com0ComPair>();
@@ -292,6 +295,7 @@ public sealed class VirtualSerialBridge : IDisposable
         return pairs;
     }
 
+    [SupportedOSPlatform("windows")]
     private static List<Com0ComPair> DetectViaDeviceClass()
     {
         // Zoek via HKLM\SYSTEM\CurrentControlSet\Enum\ROOT\PORTPAIR
@@ -349,6 +353,7 @@ public sealed class VirtualSerialBridge : IDisposable
     /// <summary>
     /// Debug: geeft alle ruwe registry-waarden terug voor diagnose.
     /// </summary>
+    [SupportedOSPlatform("windows")]
     public static string DebugRegistryDump()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -381,6 +386,7 @@ public sealed class VirtualSerialBridge : IDisposable
     /// <summary>
     /// Geeft true als com0com geïnstalleerd is op dit systeem.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416")]
     public static bool IsCom0ComInstalled()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
