@@ -213,16 +213,22 @@ public partial class MainWindow : Window
 
         var rightCol = new StackPanel { Spacing = 3 };
 
-        // Server: 2 seriële poorten
-        _spPort1.Children.Add(SimpleLabel("COM:")); _spPort1.Children.Add(_cbPort1Com);
-        _spPort1.Children.Add(SimpleLabel("Baud:")); _spPort1.Children.Add(_nudPort1Baud);
-        _spPort1.Children.Add(SimpleLabel("TCP:")); _spPort1.Children.Add(_nudPort1Tcp);
-        _spPort2.Children.Add(SimpleLabel("COM:")); _spPort2.Children.Add(_cbPort2Com);
-        _spPort2.Children.Add(SimpleLabel("Baud:")); _spPort2.Children.Add(_nudPort2Baud);
-        _spPort2.Children.Add(SimpleLabel("TCP:")); _spPort2.Children.Add(_nudPort2Tcp);
+        // Server: 2 seriële poorten — COM/Baud/TCP onder elkaar
+        static Grid SerialGrid(Control com, Control baud, Control tcp) => new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("50,*"),
+            RowDefinitions    = new RowDefinitions("Auto,4,Auto,4,Auto"),
+            Margin            = new Thickness(0, 4, 0, 0),
+            Children =
+            {
+                RowColLabel("COM:",  0, 0), SetRowCol(com,  0, 1),
+                RowColLabel("Baud:", 2, 0), SetRowCol(baud, 2, 1),
+                RowColLabel("TCP:",  4, 0), SetRowCol(tcp,  4, 1),
+            }
+        };
 
-        _spServerPorts.Children.Add(Section("Serieel 1  (CAT)", new StackPanel { Children = { _chkPort1, _spPort1 } }));
-        _spServerPorts.Children.Add(Section("Serieel 2  (PTT)", new StackPanel { Children = { _chkPort2, _spPort2 } }));
+        _spServerPorts.Children.Add(Section("Serieel 1  (CAT)", new StackPanel { Children = { _chkPort1, SerialGrid(_cbPort1Com, _nudPort1Baud, _nudPort1Tcp) } }));
+        _spServerPorts.Children.Add(Section("Serieel 2  (PTT)", new StackPanel { Children = { _chkPort2, SerialGrid(_cbPort2Com, _nudPort2Baud, _nudPort2Tcp) } }));
 
         // Client: com0com / PTY
         _spVComClient.Children.Add(_tblVirtualInfo);
