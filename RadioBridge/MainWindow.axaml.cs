@@ -21,15 +21,19 @@ public partial class MainWindow : Window
     private readonly ComboBox      _cbPlayback  = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     // Volume sliders
-    private readonly Slider    _sldCapVol  = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 160, TickFrequency = 10, IsSnapToTickEnabled = false };
-    private readonly TextBlock _tblCapVol  = new() { Text = "100%", Width = 40, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
-    private readonly Slider    _sldPbVol   = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 160, TickFrequency = 10, IsSnapToTickEnabled = false };
-    private readonly TextBlock _tblPbVol   = new() { Text = "100%", Width = 40, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Slider    _sldCapVol  = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly TextBlock _tblCapVol  = new() { Text = "100%", Width = 36, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Slider    _sldPbVol   = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly TextBlock _tblPbVol   = new() { Text = "100%", Width = 36, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
 
     // VU meters
-    private readonly Border    _vuCapBar   = new() { Height = 10, Width = 0, Background = new SolidColorBrush(Color.Parse("#4caf50")), HorizontalAlignment = HorizontalAlignment.Left };
-    private readonly Border    _vuPbBar    = new() { Height = 10, Width = 0, Background = new SolidColorBrush(Color.Parse("#2196f3")), HorizontalAlignment = HorizontalAlignment.Left };
-    private const double VuMaxWidth = 220.0;
+    private readonly Border    _vuCapBar   = new() { Height = 8, Width = 0, Background = new SolidColorBrush(Color.Parse("#4caf50")), HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border    _vuPbBar    = new() { Height = 8, Width = 0, Background = new SolidColorBrush(Color.Parse("#2196f3")), HorizontalAlignment = HorizontalAlignment.Left };
+    private const double VuMaxWidth = 140.0;
+
+    // Panels voor server/client wisseling (rechterkolom)
+    private readonly StackPanel _spServerPorts = new() { Spacing = 3 };
+    private readonly StackPanel _spClientPorts = new() { Spacing = 3 };
     private readonly ComboBox      _cbPreset    = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly CheckBox      _chkNoise    = new() { Content = "Ruisfilter inschakelen" };
     private readonly TextBlock     _tblNoiseMode  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), VerticalAlignment = VerticalAlignment.Center };
@@ -89,10 +93,10 @@ public partial class MainWindow : Window
     {
         // Window properties — set directly, no XAML loader needed
         Title      = "RadioBridge — Audio over netwerk v0.9";
-        Width      = 680;
-        Height     = 1020;
-        MinWidth   = 560;
-        MinHeight  = 800;
+        Width      = 900;
+        Height     = 760;
+        MinWidth   = 720;
+        MinHeight  = 600;
         Background = new SolidColorBrush(Color.Parse("#1e1e1e"));
         Foreground = new SolidColorBrush(Color.Parse("#dcdcdc"));
         FontSize   = 13;
@@ -108,28 +112,11 @@ public partial class MainWindow : Window
 
     private void BuildUI()
     {
-        var root = new StackPanel { Margin = new Thickness(10), Spacing = 0 };
-        var scroll = new ScrollViewer { Content = root };
-        Content = scroll;
+        // ── Event handlers ────────────────────────────────────────────────────
 
-        // Modus
         _rbServer.IsCheckedChanged += (s, e) => UpdateUI();
         _rbClient.IsCheckedChanged += (s, e) => UpdateUI();
-        root.Children.Add(Section("Modus", new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 24,
-            Children = { _rbServer, _rbClient }
-        }));
 
-        // Verbinding
-        var connGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("130,*,60,110") };
-        connGrid.Children.Add(ColLabel("IP-adres (client):", 0));
-        Grid.SetColumn(_txtHost, 1); connGrid.Children.Add(_txtHost);
-        connGrid.Children.Add(ColLabel("Poort:", 2));
-        Grid.SetColumn(_nudPort, 3); connGrid.Children.Add(_nudPort);
-        root.Children.Add(Section("Verbinding", connGrid));
-
-        // Volume sliders events
         _sldCapVol.PropertyChanged += (s, e) => {
             if (e.Property.Name == "Value") {
                 _tblCapVol.Text = $"{(int)_sldCapVol.Value}%";
@@ -142,137 +129,154 @@ public partial class MainWindow : Window
                 if (_engine != null) _engine.PlaybackGain = (float)_sldPbVol.Value / 100f;
             }
         };
-
-        // VU meter containers
-        var vuCapContainer = new Border { Height = 10, Width = VuMaxWidth, Background = new SolidColorBrush(Color.Parse("#333")), CornerRadius = new CornerRadius(3), ClipToBounds = true };
-        vuCapContainer.Child = _vuCapBar;
-        var vuPbContainer  = new Border { Height = 10, Width = VuMaxWidth, Background = new SolidColorBrush(Color.Parse("#333")), CornerRadius = new CornerRadius(3), ClipToBounds = true };
-        vuPbContainer.Child = _vuPbBar;
-
-        // Audio apparaten
-        var devGrid = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("120,*"),
-            RowDefinitions    = new RowDefinitions("Auto,4,Auto,8,Auto,4,Auto")
-        };
-        // Rij 0: opname label + dropdown
-        devGrid.Children.Add(RowColLabel("Opname (mic):", 0, 0));
-        Grid.SetRow(_cbCapture, 0); Grid.SetColumn(_cbCapture, 1); devGrid.Children.Add(_cbCapture);
-        // Rij 2: opname volume + VU
-        devGrid.Children.Add(RowColLabel("Microfoon vol:", 2, 0));
-        var capVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        capVolRow.Children.Add(_sldCapVol);
-        capVolRow.Children.Add(_tblCapVol);
-        capVolRow.Children.Add(vuCapContainer);
-        Grid.SetRow(capVolRow, 2); Grid.SetColumn(capVolRow, 1); devGrid.Children.Add(capVolRow);
-        // Rij 4: afspelen label + dropdown
-        devGrid.Children.Add(RowColLabel("Afspelen (spkr):", 4, 0));
-        Grid.SetRow(_cbPlayback, 4); Grid.SetColumn(_cbPlayback, 1); devGrid.Children.Add(_cbPlayback);
-        // Rij 6: afspelen volume + VU
-        devGrid.Children.Add(RowColLabel("Luidspr. vol:", 6, 0));
-        var pbVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        pbVolRow.Children.Add(_sldPbVol);
-        pbVolRow.Children.Add(_tblPbVol);
-        pbVolRow.Children.Add(vuPbContainer);
-        Grid.SetRow(pbVolRow, 6); Grid.SetColumn(pbVolRow, 1); devGrid.Children.Add(pbVolRow);
-        root.Children.Add(Section("Audio apparaten", devGrid));
-
-        // Preset
         _cbPreset.SelectionChanged += (s, e) => UpdatePresetInfo();
-        root.Children.Add(Section("Codec / kwaliteit", new StackPanel
-        {
-            Children = { _cbPreset, _tblPresetInfo }
-        }));
-
-        // Ruis
         _chkNoise.IsCheckedChanged += OnNoiseChanged;
-        root.Children.Add(Section("Ruisonderdrukking", new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 12,
-            Children    = { _chkNoise, _tblNoiseMode }
-        }));
-
-        // Serieel 1
-        _spPort1.Children.Add(SimpleLabel("COM:"));
-        _spPort1.Children.Add(_cbPort1Com);
-        _spPort1.Children.Add(SimpleLabel("Baud:"));
-        _spPort1.Children.Add(_nudPort1Baud);
-        _spPort1.Children.Add(SimpleLabel("TCP:"));
-        _spPort1.Children.Add(_nudPort1Tcp);
         _chkPort1.IsCheckedChanged += (s, e) => _spPort1.IsEnabled = _chkPort1.IsChecked == true;
-        root.Children.Add(Section("Serieel poort 1  (CAT)", new StackPanel
-        {
-            Children = { _chkPort1, _spPort1 }
-        }));
-
-        // Serieel 2
-        _spPort2.Children.Add(SimpleLabel("COM:"));
-        _spPort2.Children.Add(_cbPort2Com);
-        _spPort2.Children.Add(SimpleLabel("Baud:"));
-        _spPort2.Children.Add(_nudPort2Baud);
-        _spPort2.Children.Add(SimpleLabel("TCP:"));
-        _spPort2.Children.Add(_nudPort2Tcp);
         _chkPort2.IsCheckedChanged += (s, e) => _spPort2.IsEnabled = _chkPort2.IsChecked == true;
-        root.Children.Add(Section("Serieel poort 2  (PTT)", new StackPanel
-        {
-            Children = { _chkPort2, _spPort2 }
-        }));
-
-        // Client virtuele COM poorten
-        _btnDetectCom0Com.Click += OnDetectCom0Com;
-        _spVComClient.Children.Add(_tblVirtualInfo);
-        _spVComClient.Children.Add(new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 8,
-            Children    = { _btnDetectCom0Com }
-        });
-        _spVComClient.Children.Add(new StackPanel
-        {
-            Orientation = Orientation.Vertical, Spacing = 6,
-            Children    = {
-                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8,
-                    Children = { SimpleLabel("CAT (sturing):"), _cbVCom1 } },
-                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8,
-                    Children = { SimpleLabel("PTT (zenden): "), _cbVCom2 } }
-            }
-        });
-        root.Children.Add(Section("💻  Client virtuele COM poorten", _spVComClient));
-
-        // Testtoon
-        _chkTone.IsCheckedChanged += OnToneChanged;
+        _btnDetectCom0Com.Click    += OnDetectCom0Com;
+        _chkTone.IsCheckedChanged  += OnToneChanged;
         _sldToneFreq.PropertyChanged += (s, e) => {
-            if (e.Property.Name == "Value") {
-                _tblToneFreq.Text = $"{(int)_sldToneFreq.Value} Hz";
-                ApplyTone();
-            }
+            if (e.Property.Name == "Value") { _tblToneFreq.Text = $"{(int)_sldToneFreq.Value} Hz"; ApplyTone(); }
         };
         _sldToneVol.PropertyChanged += (s, e) => {
-            if (e.Property.Name == "Value") {
-                _tblToneVol.Text = $"{(int)_sldToneVol.Value}%";
-                ApplyTone();
-            }
+            if (e.Property.Name == "Value") { _tblToneVol.Text = $"{(int)_sldToneVol.Value}%"; ApplyTone(); }
         };
-        _spToneSliders.Children.Add(new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 8,
-            Children = {
-                SimpleLabel("Frequentie:"), _sldToneFreq, _tblToneFreq,
-                SimpleLabel("  Volume:"),  _sldToneVol,  _tblToneVol
-            }
-        });
-        root.Children.Add(Section("🔊  Testtoon", new StackPanel
-        {
-            Children = { _chkTone, _spToneSliders }
-        }));
-
-        // Knoppen
         _btnConnect.Background = new SolidColorBrush(Color.Parse("#1a6b1a"));
         _btnConnect.Click     += OnConnectClick;
         _btnRefresh.Click     += (s, e) => { PopulateDevices(); PopulateSerialPorts(); AppendLog("Apparatenlijst vernieuwd."); };
         _btnFirewall.Click    += OnFirewallClick;
+
+        // ── Bouwen linkerkolom (audio) ────────────────────────────────────────
+
+        var leftCol = new StackPanel { Spacing = 3 };
+
+        // Modus + Verbinding bovenaan (volle breedte → in linkerkolom)
+        leftCol.Children.Add(Section("Modus", new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 24,
+            Children    = { _rbServer, _rbClient }
+        }));
+
+        var connGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("100,*,46,100") };
+        connGrid.Children.Add(ColLabel("IP-adres:", 0));
+        Grid.SetColumn(_txtHost, 1); connGrid.Children.Add(_txtHost);
+        connGrid.Children.Add(ColLabel("Poort:", 2));
+        Grid.SetColumn(_nudPort, 3); connGrid.Children.Add(_nudPort);
+        leftCol.Children.Add(Section("Verbinding", connGrid));
+
+        // VU-meter containers
+        var vuCapContainer = new Border { Height = 8, Width = VuMaxWidth,
+            Background = new SolidColorBrush(Color.Parse("#333")),
+            CornerRadius = new CornerRadius(3), ClipToBounds = true };
+        vuCapContainer.Child = _vuCapBar;
+        var vuPbContainer = new Border { Height = 8, Width = VuMaxWidth,
+            Background = new SolidColorBrush(Color.Parse("#333")),
+            CornerRadius = new CornerRadius(3), ClipToBounds = true };
+        vuPbContainer.Child = _vuPbBar;
+
+        // Audio apparaten + volume + VU
+        var devGrid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("100,*"),
+            RowDefinitions    = new RowDefinitions("Auto,3,Auto,6,Auto,3,Auto")
+        };
+        devGrid.Children.Add(RowColLabel("Opname:", 0, 0));
+        Grid.SetRow(_cbCapture, 0); Grid.SetColumn(_cbCapture, 1); devGrid.Children.Add(_cbCapture);
+
+        devGrid.Children.Add(RowColLabel("Mic vol:", 2, 0));
+        var capVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
+        capVolRow.Children.Add(_sldCapVol); capVolRow.Children.Add(_tblCapVol); capVolRow.Children.Add(vuCapContainer);
+        Grid.SetRow(capVolRow, 2); Grid.SetColumn(capVolRow, 1); devGrid.Children.Add(capVolRow);
+
+        devGrid.Children.Add(RowColLabel("Afspelen:", 4, 0));
+        Grid.SetRow(_cbPlayback, 4); Grid.SetColumn(_cbPlayback, 1); devGrid.Children.Add(_cbPlayback);
+
+        devGrid.Children.Add(RowColLabel("Spkr vol:", 6, 0));
+        var pbVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
+        pbVolRow.Children.Add(_sldPbVol); pbVolRow.Children.Add(_tblPbVol); pbVolRow.Children.Add(vuPbContainer);
+        Grid.SetRow(pbVolRow, 6); Grid.SetColumn(pbVolRow, 1); devGrid.Children.Add(pbVolRow);
+
+        leftCol.Children.Add(Section("🎙  Audio", devGrid));
+
+        // Codec + ruis
+        leftCol.Children.Add(Section("Codec", new StackPanel
+        {
+            Children = { _cbPreset, _tblPresetInfo }
+        }));
+        leftCol.Children.Add(Section("Ruis", new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 10,
+            Children    = { _chkNoise, _tblNoiseMode }
+        }));
+
+        // ── Bouwen rechterkolom (poorten + test + log) ────────────────────────
+
+        var rightCol = new StackPanel { Spacing = 3 };
+
+        // Server: 2 seriële poorten
+        _spPort1.Children.Add(SimpleLabel("COM:")); _spPort1.Children.Add(_cbPort1Com);
+        _spPort1.Children.Add(SimpleLabel("Baud:")); _spPort1.Children.Add(_nudPort1Baud);
+        _spPort1.Children.Add(SimpleLabel("TCP:")); _spPort1.Children.Add(_nudPort1Tcp);
+        _spPort2.Children.Add(SimpleLabel("COM:")); _spPort2.Children.Add(_cbPort2Com);
+        _spPort2.Children.Add(SimpleLabel("Baud:")); _spPort2.Children.Add(_nudPort2Baud);
+        _spPort2.Children.Add(SimpleLabel("TCP:")); _spPort2.Children.Add(_nudPort2Tcp);
+
+        _spServerPorts.Children.Add(Section("Serieel 1  (CAT)", new StackPanel { Children = { _chkPort1, _spPort1 } }));
+        _spServerPorts.Children.Add(Section("Serieel 2  (PTT)", new StackPanel { Children = { _chkPort2, _spPort2 } }));
+
+        // Client: com0com / PTY
+        _spVComClient.Children.Add(_tblVirtualInfo);
+        _spVComClient.Children.Add(_btnDetectCom0Com);
+        _spVComClient.Children.Add(new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("80,*"),
+            RowDefinitions    = new RowDefinitions("Auto,6,Auto"),
+            Children          =
+            {
+                RowColLabel("CAT:", 0, 0),
+                SetRowCol(_cbVCom1, 0, 1),
+                RowColLabel("PTT:", 2, 0),
+                SetRowCol(_cbVCom2, 2, 1),
+            }
+        });
+        _spClientPorts.Children.Add(Section("💻  Virtuele COM (com0com / PTY)", _spVComClient));
+
+        rightCol.Children.Add(_spServerPorts);
+        rightCol.Children.Add(_spClientPorts);
+
+        // Testtoon
+        _spToneSliders.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Vertical, Spacing = 4,
+            Children =
+            {
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6,
+                    Children = { SimpleLabel("Freq:"), _sldToneFreq, _tblToneFreq } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6,
+                    Children = { SimpleLabel("Vol: "), _sldToneVol,  _tblToneVol  } }
+            }
+        });
+        rightCol.Children.Add(Section("🔊  Testtoon", new StackPanel { Children = { _chkTone, _spToneSliders } }));
+
+        // ── Hoofd layout: 2 kolommen ──────────────────────────────────────────
+
+        var twoCol = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,8,*"),
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        Grid.SetColumn(leftCol,  0); twoCol.Children.Add(leftCol);
+        Grid.SetColumn(rightCol, 2); twoCol.Children.Add(rightCol);
+
+        // ── Root: 2-kolom + knoppen + status + log ────────────────────────────
+
+        var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        root.Children.Add(twoCol);
+
+        // Knoppen
         root.Children.Add(new StackPanel
         {
-            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0,6,0,4),
+            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0,4,0,2),
             Children    = { _btnConnect, _btnRefresh, _btnFirewall }
         });
 
@@ -287,9 +291,16 @@ public partial class MainWindow : Window
             BorderBrush     = new SolidColorBrush(Color.Parse("#444")),
             BorderThickness = new Thickness(1),
             CornerRadius    = new CornerRadius(4),
-            Margin          = new Thickness(0,4,0,0),
+            Margin          = new Thickness(0,2,0,0),
             Child           = _logScroller
         });
+
+        Content = new ScrollViewer { Content = root };
+    }
+
+    private static Control SetRowCol(Control c, int row, int col)
+    {
+        Grid.SetRow(c, row); Grid.SetColumn(c, col); return c;
     }
 
     // ── UI helpers ────────────────────────────────────────────────────────────
@@ -383,8 +394,9 @@ public partial class MainWindow : Window
         _spPort1.IsEnabled   = isServer && _chkPort1.IsChecked == true;
         _spPort2.IsEnabled   = isServer && _chkPort2.IsChecked == true;
 
-        // Virtuele COM sectie alleen relevant voor client
-        _spVComClient.IsVisible = !isServer;
+        // Rechterkolom: serverpoorten OF client virtuele COM
+        _spServerPorts.IsVisible = isServer;
+        _spClientPorts.IsVisible = !isServer;
 
         _btnConnect.Content    = _connected ? "Verbreken" : (isServer ? "Server starten" : "Verbinden");
         _btnConnect.Background = _connected
