@@ -29,7 +29,6 @@ public sealed class VirtualSerialBridge : IDisposable
 
     // ── State ─────────────────────────────────────────────────────────────────
     private CancellationTokenSource _cts = new();
-    private bool   _running;
     private string _virtualPort = "";
 
     // Linux PTY handles

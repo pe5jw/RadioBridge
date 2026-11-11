@@ -141,8 +141,8 @@ public class AudioEngine : IDisposable
     public float PlaybackGain { get; set; } = 1.0f;
 
     // VU-meter: peak level (0.0–1.0) van het laatste audio-frame
-    private volatile float _captureLevel;
-    private volatile float _playbackLevel;
+    private float _captureLevel;
+    private float _playbackLevel;
 
     // Level events zijn gethrottled: max 20× per seconde (elke 50 ms)
     private long _lastLevelTick = 0;
