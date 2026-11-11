@@ -60,7 +60,6 @@ public sealed class VirtualSerialBridge : IDisposable
             _tcp = new TcpClient { NoDelay = true };
             await _tcp.ConnectAsync(host, tcpPort, _cts.Token);
             _net = _tcp.GetStream();
-            _running = true;
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 await StartWindowsAsync(virtualPort);
@@ -193,7 +192,6 @@ public sealed class VirtualSerialBridge : IDisposable
     public void Stop()
     {
         _cts.Cancel();
-        _running = false;
 
         if (_masterFd >= 0) { NativeClose(_masterFd); _masterFd = -1; }
         if (_slaveFd  >= 0) { NativeClose(_slaveFd);  _slaveFd  = -1; }
