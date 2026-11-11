@@ -231,83 +231,50 @@ public sealed class VirtualSerialBridge : IDisposable
     {
         var pairs = new List<Com0ComPair>();
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return pairs;
-
-        // Methode 1: Enum\ROOT\PORTPAIR — com0com registreert hier zijn paren
-        pairs = DetectViaEnumPortPair();
-        if (pairs.Count > 0) return pairs;
-
-        // Methode 2: Doorzoek alle Enum\... devices op com0com ProviderName
-        pairs = DetectViaEnumScan();
-        return pairs;
+        return DetectViaBruteForceEnum();
     }
 
+    /// <summary>
+    /// Doorzoekt HKLM\SYSTEM\CurrentControlSet\Enum volledig op devices waarvan
+    /// de FriendlyName "CNCA1", "CNCB2" etc. bevat — werkt ongeacht com0com versie.
+    /// Het COM-nummer staat altijd onder Device Parameters\PortName.
+    /// </summary>
     [SupportedOSPlatform("windows")]
-    private static List<Com0ComPair> DetectViaEnumPortPair()
+    private static List<Com0ComPair> DetectViaBruteForceEnum()
     {
-        // com0com registreert poorten onder HKLM\SYSTEM\CurrentControlSet\Enum\ROOT\PORTPAIR\XXXX
-        // Elke subkey heeft een "FriendlyName" zoals "com0com - serial port emulator (CNCA1)"
-        // en onder Device Parameters\PortName staat het echte COM-nummer
         var cncPorts = new List<(string cncName, string comName)>();
         try
         {
-            using var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Enum\ROOT\PORTPAIR");
-            if (root == null) return new List<Com0ComPair>();
+            using var enumKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Enum");
+            if (enumKey == null) return new List<Com0ComPair>();
 
-            foreach (var devName in root.GetSubKeyNames())
+            foreach (var busName in enumKey.GetSubKeyNames())
             {
-                using var dev = root.OpenSubKey(devName);
-                if (dev == null) continue;
+                using var busKey = enumKey.OpenSubKey(busName);
+                if (busKey == null) continue;
 
-                string friendly = dev.GetValue("FriendlyName") as string ?? "";
-                // FriendlyName: "com0com - serial port emulator (CNCA1)"
-                var cm = Regex.Match(friendly, @"CNC([AB])(\d+)", RegexOptions.IgnoreCase);
-                if (!cm.Success) continue;
-
-                // COM-nummer staat onder Device Parameters\PortName
-                using var dp = dev.OpenSubKey("Device Parameters");
-                string? portName = dp?.GetValue("PortName") as string;
-                if (portName == null) continue;
-
-                cncPorts.Add((cm.Value, portName));
-            }
-        }
-        catch { return new List<Com0ComPair>(); }
-
-        return GroupCncPorts(cncPorts);
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static List<Com0ComPair> DetectViaEnumScan()
-    {
-        // Scan alle devices in Enum op ProviderName=com0com (langzamer maar completer)
-        var cncPorts = new List<(string cncName, string comName)>();
-        string[] enumBases = {
-            @"SYSTEM\CurrentControlSet\Enum\ROOT",
-            @"SYSTEM\CurrentControlSet\Enum\ACPI",
-        };
-        try
-        {
-            foreach (var basePath in enumBases)
-            {
-                using var baseKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(basePath);
-                if (baseKey == null) continue;
-                foreach (var cat in baseKey.GetSubKeyNames())
+                foreach (var devClass in busKey.GetSubKeyNames())
                 {
-                    if (!cat.Contains("PORT", StringComparison.OrdinalIgnoreCase) &&
-                        !cat.Contains("COM0COM", StringComparison.OrdinalIgnoreCase)) continue;
-                    using var catKey = baseKey.OpenSubKey(cat);
-                    if (catKey == null) continue;
-                    foreach (var devName in catKey.GetSubKeyNames())
+                    using var classKey = busKey.OpenSubKey(devClass);
+                    if (classKey == null) continue;
+
+                    foreach (var instance in classKey.GetSubKeyNames())
                     {
-                        using var dev = catKey.OpenSubKey(devName);
-                        if (dev == null) continue;
-                        string friendly = dev.GetValue("FriendlyName") as string ?? "";
+                        using var inst = classKey.OpenSubKey(instance);
+                        if (inst == null) continue;
+
+                        string friendly = inst.GetValue("FriendlyName") as string ?? "";
+                        // Zoek patroon: CNCA1, CNCB2, CNCA1 (COM7), etc.
                         var cm = Regex.Match(friendly, @"CNC([AB])(\d+)", RegexOptions.IgnoreCase);
                         if (!cm.Success) continue;
-                        using var dp = dev.OpenSubKey("Device Parameters");
+
+                        // COM-nummer onder Device Parameters\PortName
+                        using var dp = inst.OpenSubKey("Device Parameters");
                         string? portName = dp?.GetValue("PortName") as string;
-                        if (portName != null) cncPorts.Add((cm.Value, portName));
+                        if (string.IsNullOrEmpty(portName)) continue;
+
+                        cncPorts.Add((cm.Value, portName));
                     }
                 }
             }
