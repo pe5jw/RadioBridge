@@ -19,6 +19,17 @@ public partial class MainWindow : Window
     private readonly NumericUpDown _nudPort     = new() { Minimum = 1024, Maximum = 65535, Value = 5000, Width = 110 };
     private readonly ComboBox      _cbCapture   = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox      _cbPlayback  = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+
+    // Volume sliders
+    private readonly Slider    _sldCapVol  = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 160, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly TextBlock _tblCapVol  = new() { Text = "100%", Width = 40, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Slider    _sldPbVol   = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 160, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly TextBlock _tblPbVol   = new() { Text = "100%", Width = 40, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
+
+    // VU meters
+    private readonly Border    _vuCapBar   = new() { Height = 10, Width = 0, Background = new SolidColorBrush(Color.Parse("#4caf50")), HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border    _vuPbBar    = new() { Height = 10, Width = 0, Background = new SolidColorBrush(Color.Parse("#2196f3")), HorizontalAlignment = HorizontalAlignment.Left };
+    private const double VuMaxWidth = 220.0;
     private readonly ComboBox      _cbPreset    = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly CheckBox      _chkNoise    = new() { Content = "Ruisfilter inschakelen" };
     private readonly TextBlock     _tblNoiseMode  = new() { Foreground = new SolidColorBrush(Color.Parse("#888")), VerticalAlignment = VerticalAlignment.Center };
@@ -118,16 +129,52 @@ public partial class MainWindow : Window
         Grid.SetColumn(_nudPort, 3); connGrid.Children.Add(_nudPort);
         root.Children.Add(Section("Verbinding", connGrid));
 
+        // Volume sliders events
+        _sldCapVol.PropertyChanged += (s, e) => {
+            if (e.Property.Name == "Value") {
+                _tblCapVol.Text = $"{(int)_sldCapVol.Value}%";
+                if (_engine != null) _engine.CaptureGain = (float)_sldCapVol.Value / 100f;
+            }
+        };
+        _sldPbVol.PropertyChanged += (s, e) => {
+            if (e.Property.Name == "Value") {
+                _tblPbVol.Text = $"{(int)_sldPbVol.Value}%";
+                if (_engine != null) _engine.PlaybackGain = (float)_sldPbVol.Value / 100f;
+            }
+        };
+
+        // VU meter containers
+        var vuCapContainer = new Border { Height = 10, Width = VuMaxWidth, Background = new SolidColorBrush(Color.Parse("#333")), CornerRadius = new CornerRadius(3), ClipToBounds = true };
+        vuCapContainer.Child = _vuCapBar;
+        var vuPbContainer  = new Border { Height = 10, Width = VuMaxWidth, Background = new SolidColorBrush(Color.Parse("#333")), CornerRadius = new CornerRadius(3), ClipToBounds = true };
+        vuPbContainer.Child = _vuPbBar;
+
         // Audio apparaten
         var devGrid = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("120,*"),
-            RowDefinitions    = new RowDefinitions("Auto,6,Auto")
+            RowDefinitions    = new RowDefinitions("Auto,4,Auto,8,Auto,4,Auto")
         };
+        // Rij 0: opname label + dropdown
         devGrid.Children.Add(RowColLabel("Opname (mic):", 0, 0));
         Grid.SetRow(_cbCapture, 0); Grid.SetColumn(_cbCapture, 1); devGrid.Children.Add(_cbCapture);
-        devGrid.Children.Add(RowColLabel("Afspelen (spkr):", 2, 0));
-        Grid.SetRow(_cbPlayback, 2); Grid.SetColumn(_cbPlayback, 1); devGrid.Children.Add(_cbPlayback);
+        // Rij 2: opname volume + VU
+        devGrid.Children.Add(RowColLabel("Microfoon vol:", 2, 0));
+        var capVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        capVolRow.Children.Add(_sldCapVol);
+        capVolRow.Children.Add(_tblCapVol);
+        capVolRow.Children.Add(vuCapContainer);
+        Grid.SetRow(capVolRow, 2); Grid.SetColumn(capVolRow, 1); devGrid.Children.Add(capVolRow);
+        // Rij 4: afspelen label + dropdown
+        devGrid.Children.Add(RowColLabel("Afspelen (spkr):", 4, 0));
+        Grid.SetRow(_cbPlayback, 4); Grid.SetColumn(_cbPlayback, 1); devGrid.Children.Add(_cbPlayback);
+        // Rij 6: afspelen volume + VU
+        devGrid.Children.Add(RowColLabel("Luidspr. vol:", 6, 0));
+        var pbVolRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        pbVolRow.Children.Add(_sldPbVol);
+        pbVolRow.Children.Add(_tblPbVol);
+        pbVolRow.Children.Add(vuPbContainer);
+        Grid.SetRow(pbVolRow, 6); Grid.SetColumn(pbVolRow, 1); devGrid.Children.Add(pbVolRow);
         root.Children.Add(Section("Audio apparaten", devGrid));
 
         // Preset
@@ -421,6 +468,9 @@ public partial class MainWindow : Window
         _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
         _engine.ClientDisconnected += OnClientDisconnected;
         _engine.ConfigReceived     += OnConfigReceived;
+        _engine.LevelChanged       += OnLevelChanged;
+        _engine.CaptureGain  = (float)_sldCapVol.Value  / 100f;
+        _engine.PlaybackGain = (float)_sldPbVol.Value   / 100f;
         ApplyTone();
 
         if (isServer)
@@ -485,6 +535,9 @@ public partial class MainWindow : Window
         _engine.Error              += msg => { AppendLog($"⚠  {msg}"); SetStatus(msg, true); };
         _engine.ClientDisconnected += OnClientDisconnected;
         _engine.ConfigReceived     += OnConfigReceived;
+        _engine.LevelChanged       += OnLevelChanged;
+        _engine.CaptureGain  = (float)_sldCapVol.Value  / 100f;
+        _engine.PlaybackGain = (float)_sldPbVol.Value   / 100f;
         _engine.SerialConfig1 = GetSerialConfig(1);
         _engine.SerialConfig2 = GetSerialConfig(2);
         _connected = true; _restarting = false; UpdateUI();
@@ -504,6 +557,35 @@ public partial class MainWindow : Window
                 // Virtuele poort namen worden gelogged door AudioEngine zodra ze aangemaakt zijn
             }
             _tblNoiseMode.Text = _chkNoise.IsChecked == true ? "(actief)" : "";
+        });
+    }
+
+    // ── VU meter ─────────────────────────────────────────────────────────────
+
+    private void OnLevelChanged(float capLevel, float pbLevel)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            // Logaritmische weergave: dB = 20*log10(level), range -60..0 → 0..1
+            static double ToBar(float lvl)
+            {
+                if (lvl <= 0.001f) return 0.0;
+                double db = 20.0 * Math.Log10(lvl);  // -60..0
+                return Math.Max(0.0, (db + 60.0) / 60.0);
+            }
+
+            _vuCapBar.Width = ToBar(capLevel) * VuMaxWidth;
+            _vuPbBar.Width  = ToBar(pbLevel)  * VuMaxWidth;
+
+            // Kleur: groen < -12dB, geel -12..-3dB, rood > -3dB
+            static IBrush LevelColor(float lvl)
+            {
+                if (lvl > 0.71f) return new SolidColorBrush(Color.Parse("#f44336")); // rood  > -3dB
+                if (lvl > 0.25f) return new SolidColorBrush(Color.Parse("#ffc107")); // geel  > -12dB
+                return new SolidColorBrush(Color.Parse("#4caf50"));                  // groen
+            }
+            _vuCapBar.Background = LevelColor(capLevel);
+            _vuPbBar.Background  = LevelColor(pbLevel);
         });
     }
 
@@ -611,6 +693,8 @@ public partial class MainWindow : Window
     {
         _engine?.Stop(); _engine?.Dispose(); _engine = null;
         _connected = false; _restarting = false;
+        _vuCapBar.Width = 0;
+        _vuPbBar.Width  = 0;
         UpdateUI(); SetStatus("Gestopt"); AppendLog("Verbinding beëindigd.");
     }
 

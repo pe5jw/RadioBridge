@@ -134,11 +134,27 @@ public class AudioEngine : IDisposable
     private const int MaxPlayQueueBytes = 192_000; // ~1 s at 48kHz 16bit mono
     private int _playQueueBytes;
 
+    // ── Gain (volume) ─────────────────────────────────────────────────────────
+    /// <summary>Opname-gain: 0.0 = stil, 1.0 = origineel, >1.0 = versterken (max 4.0)</summary>
+    public float CaptureGain  { get; set; } = 1.0f;
+    /// <summary>Afspeel-gain: 0.0 = stil, 1.0 = origineel, >1.0 = versterken (max 4.0)</summary>
+    public float PlaybackGain { get; set; } = 1.0f;
+
+    // VU-meter: peak level (0.0–1.0) van het laatste audio-frame
+    private volatile float _captureLevel;
+    private volatile float _playbackLevel;
+
+    // Level events zijn gethrottled: max 20× per seconde (elke 50 ms)
+    private long _lastLevelTick = 0;
+    private const long LevelIntervalTicks = 10_000_000 / 20; // 50 ms in ticks
+
     // ── Events ────────────────────────────────────────────────────────────────
     public event Action<string>?       StatusChanged;
     public event Action<string>?       Error;
     public event Action?               ClientDisconnected;
     public event Action<BridgeConfig>? ConfigReceived;
+    /// <summary>VU-meter update: (captureLevel 0–1, playbackLevel 0–1) — max 20×/s</summary>
+    public event Action<float, float>? LevelChanged;
 
     public SerialPortConfig SerialConfig1 { get; set; } = new();
     public SerialPortConfig SerialConfig2 { get; set; } = new();
@@ -427,6 +443,10 @@ public class AudioEngine : IDisposable
             // Testtoon injecteren vóór filter en codec
             _tone.Mix(bytes, byteLen);
 
+            // Capture gain toepassen + VU meten
+            ApplyGainAndMeasure(pcm, samples, CaptureGain, ref _captureLevel, isCap: true);
+            Buffer.BlockCopy(pcm, 0, bytes, 0, byteLen);
+
             if (_filter.IsEnabled)
                 _filter.Process(bytes, byteLen, _preset.Channels);
 
@@ -469,13 +489,60 @@ public class AudioEngine : IDisposable
 
         if (chunk != null && chunk.Length == byteLen)
         {
-            Marshal.Copy(chunk, 0, buffer, byteLen);
+            var pcm = new short[samples];
+            Buffer.BlockCopy(chunk, 0, pcm, 0, byteLen);
+            ApplyGainAndMeasure(pcm, samples, PlaybackGain, ref _playbackLevel, isCap: false);
+            Marshal.Copy(pcm, 0, buffer, samples);
         }
         else
         {
             // Silence
+            _playbackLevel = 0f;
             for (int i = 0; i < byteLen; i++)
                 Marshal.WriteByte(buffer + i, 0);
+        }
+    }
+
+    // ── Gain + VU meting ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Past gain toe op PCM samples (in-place) en meet de peak als fraction 0–1.
+    /// Vuurt LevelChanged event als het interval verstreken is.
+    /// </summary>
+    private void ApplyGainAndMeasure(short[] pcm, int count, float gain, ref float level, bool isCap)
+    {
+        float peak = 0f;
+        if (Math.Abs(gain - 1.0f) > 0.001f)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                float s = pcm[i] * gain;
+                // Soft-clip bij ±32767
+                if (s >  32767f) s =  32767f;
+                if (s < -32768f) s = -32768f;
+                pcm[i] = (short)s;
+                float a = s < 0 ? -s : s;
+                if (a > peak) peak = a;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < count; i++)
+            {
+                float a = pcm[i] < 0 ? -pcm[i] : pcm[i];
+                if (a > peak) peak = a;
+            }
+        }
+
+        level = peak / 32768f;
+
+        // Throttle: stuur event max 20× per seconde
+        long now = DateTime.UtcNow.Ticks;
+        long last = System.Threading.Interlocked.Read(ref _lastLevelTick);
+        if (now - last >= LevelIntervalTicks)
+        {
+            System.Threading.Interlocked.Exchange(ref _lastLevelTick, now);
+            LevelChanged?.Invoke(_captureLevel, _playbackLevel);
         }
     }
 
