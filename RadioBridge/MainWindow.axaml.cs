@@ -44,7 +44,7 @@ public partial class MainWindow : Window
     private readonly TextBlock     _tblLog      = new() { Foreground = new SolidColorBrush(Color.Parse("#aaa")), FontFamily = new FontFamily("Consolas,monospace"), FontSize = 11, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6) };
     private readonly TextBlock     _tblStatus   = new() { Text = "Gestopt", Foreground = new SolidColorBrush(Color.Parse("#6fbf6f")) };
     private readonly Border        _pnlStatus   = new() { Background = new SolidColorBrush(Color.Parse("#1a3a1a")), BorderBrush = new SolidColorBrush(Color.Parse("#2a6a2a")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8,6) };
-    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, Height = 260 };
+    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, MinHeight = 300 };
 
     // Serial port 1
     private readonly CheckBox      _chkPort1     = new() { Content = "Inschakelen" };
@@ -93,9 +93,9 @@ public partial class MainWindow : Window
     {
         // Window properties — set directly, no XAML loader needed
         Title      = "RadioBridge — Audio over netwerk v0.9";
-        Width      = 900;
+        Width      = 1300;
         Height     = 760;
-        MinWidth   = 720;
+        MinWidth   = 960;
         MinHeight  = 600;
         Background = new SolidColorBrush(Color.Parse("#1e1e1e"));
         Foreground = new SolidColorBrush(Color.Parse("#dcdcdc"));
@@ -264,42 +264,41 @@ public partial class MainWindow : Window
         });
         rightCol.Children.Add(Section("🔊  Testtoon", new StackPanel { Children = { _chkTone, _spToneSliders } }));
 
-        // ── Hoofd layout: 2 kolommen ──────────────────────────────────────────
+        // ── Derde kolom: knoppen + status + log ──────────────────────────────
 
-        var twoCol = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("*,8,*"),
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        Grid.SetColumn(leftCol,  0); twoCol.Children.Add(leftCol);
-        Grid.SetColumn(rightCol, 2); twoCol.Children.Add(rightCol);
-
-        // ── Root: 2-kolom + knoppen + status + log ────────────────────────────
-
-        var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
-        root.Children.Add(twoCol);
-
-        // Knoppen
-        root.Children.Add(new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0,4,0,2),
-            Children    = { _btnConnect, _btnRefresh, _btnFirewall }
-        });
-
-        // Status
         _pnlStatus.Child = _tblStatus;
-        root.Children.Add(_pnlStatus);
-
-        // Log
         _logScroller.Content = _tblLog;
-        root.Children.Add(new Border
+        _logScroller.Height = double.NaN; // vrije hoogte in derde kolom
+
+        var monitorCol = new StackPanel { Spacing = 6 };
+        monitorCol.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 6,
+            Children    = { _btnConnect, _btnRefresh }
+        });
+        monitorCol.Children.Add(_btnFirewall);
+        monitorCol.Children.Add(_pnlStatus);
+        monitorCol.Children.Add(new Border
         {
             BorderBrush     = new SolidColorBrush(Color.Parse("#444")),
             BorderThickness = new Thickness(1),
             CornerRadius    = new CornerRadius(4),
-            Margin          = new Thickness(0,2,0,0),
-            Child           = _logScroller
+            Child           = _logScroller,
         });
+
+        // ── Hoofd layout: 3 kolommen ──────────────────────────────────────────
+
+        var threeCol = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,8,*,8,*"),
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        Grid.SetColumn(leftCol,    0); threeCol.Children.Add(leftCol);
+        Grid.SetColumn(rightCol,   2); threeCol.Children.Add(rightCol);
+        Grid.SetColumn(monitorCol, 4); threeCol.Children.Add(monitorCol);
+
+        var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        root.Children.Add(threeCol);
 
         Content = new ScrollViewer { Content = root };
     }
