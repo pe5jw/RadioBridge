@@ -127,10 +127,11 @@ public class SerialBridge : IDisposable
             if (bytes <= 0) return;
             var buf = new byte[bytes];
             _serial.Read(buf, 0, bytes);
+            Log($"← Serieel {bytes}B → TCP: {BitConverter.ToString(buf, 0, bytes)}");
             _stream.Write(buf, 0, buf.Length);
         }
         catch (ObjectDisposedException) { _running = false; }
-        catch { }
+        catch (Exception ex) { Log($"OnSerialData fout: {ex.Message}"); }
     }
 
     // ── TCP → Serial ─────────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ public class SerialBridge : IDisposable
                     FireDisconnect();
                     break;
                 }
+                Log($"→ TCP {n}B → Serieel: {BitConverter.ToString(buf, 0, n)}");
                 if (_serial?.IsOpen == true)
                     _serial.Write(buf, 0, n);
             }
