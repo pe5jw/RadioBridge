@@ -77,6 +77,8 @@ public class SerialBridge : IDisposable
         {
             ReadTimeout  = 100,
             WriteTimeout = 500,
+            DtrEnable    = true,   // vereist voor Yaesu CAT kabel (voeding via DTR)
+            RtsEnable    = false,
         };
         try
         {
