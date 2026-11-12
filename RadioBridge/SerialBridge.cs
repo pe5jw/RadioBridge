@@ -86,7 +86,7 @@ public class SerialBridge : IDisposable
 
     // ── Serial setup ──────────────────────────────────────────────────────────
 
-    private Task StartSerialAsync(string comPort, int baud)
+    private async Task StartSerialAsync(string comPort, int baud)
     {
         _serial = new SerialPort(comPort, baud)
         {
@@ -102,18 +102,20 @@ public class SerialBridge : IDisposable
         catch (Exception ex)
         {
             Error?.Invoke($"[{_name}] Kan {comPort} niet openen: {ex.Message}");
-            return Task.CompletedTask;
+            return;
         }
 
         _running = true;
 
+        // Wacht tot één van beide richtingen klaar is (verbinding verbroken)
         // Serial → TCP (polling loop — DataReceived event werkt niet betrouwbaar op Linux)
-        _ = Task.Run(() => SerialToTcpAsync(_cts.Token));
-
+        var t1 = Task.Run(() => SerialToTcpAsync(_cts.Token));
         // TCP → Serial
-        _ = Task.Run(() => TcpToSerialAsync(_cts.Token));
+        var t2 = Task.Run(() => TcpToSerialAsync(_cts.Token));
 
-        return Task.CompletedTask;
+        await Task.WhenAny(t1, t2);
+        // Wacht kort zodat de andere taak ook kan afsluiten
+        await Task.WhenAll(t1, t2).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
     }
 
     // ── Serial → TCP ─────────────────────────────────────────────────────────
