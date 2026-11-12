@@ -90,9 +90,9 @@ public class SerialBridge : IDisposable
     {
         _serial = new SerialPort(comPort, baud)
         {
-            ReadTimeout  = 100,
+            ReadTimeout  = SerialPort.InfiniteTimeout,
             WriteTimeout = 500,
-            DtrEnable    = true,   // vereist voor Yaesu CAT kabel (voeding via DTR)
+            DtrEnable    = true,
             RtsEnable    = false,
         };
         try
@@ -107,8 +107,8 @@ public class SerialBridge : IDisposable
 
         _running = true;
 
-        // Serial → TCP
-        _serial.DataReceived += OnSerialData;
+        // Serial → TCP (polling loop — DataReceived event werkt niet betrouwbaar op Linux)
+        _ = Task.Run(() => SerialToTcpAsync(_cts.Token));
 
         // TCP → Serial
         _ = Task.Run(() => TcpToSerialAsync(_cts.Token));
@@ -118,20 +118,30 @@ public class SerialBridge : IDisposable
 
     // ── Serial → TCP ─────────────────────────────────────────────────────────
 
-    private void OnSerialData(object sender, SerialDataReceivedEventArgs e)
+    private async Task SerialToTcpAsync(CancellationToken ct)
     {
-        if (!_running || _stream == null) return;
+        var buf = new byte[256];
         try
         {
-            int bytes = _serial!.BytesToRead;
-            if (bytes <= 0) return;
-            var buf = new byte[bytes];
-            _serial.Read(buf, 0, bytes);
-            Log($"← Serieel {bytes}B → TCP: {BitConverter.ToString(buf, 0, bytes)}");
-            _stream.Write(buf, 0, buf.Length);
+            while (!ct.IsCancellationRequested && _serial?.IsOpen == true)
+            {
+                int n = 0;
+                try
+                {
+                    // BaseStream.ReadAsync werkt cross-platform betrouwbaar
+                    n = await _serial.BaseStream.ReadAsync(buf, 0, buf.Length, ct);
+                }
+                catch (TimeoutException) { continue; }
+
+                if (n <= 0) break;
+                Log($"← Serieel {n}B → TCP: {BitConverter.ToString(buf, 0, n)}");
+                if (_stream != null)
+                    await _stream.WriteAsync(buf.AsMemory(0, n), ct);
+            }
         }
-        catch (ObjectDisposedException) { _running = false; }
-        catch (Exception ex) { Log($"OnSerialData fout: {ex.Message}"); }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException)    { _running = false; }
+        catch (Exception ex) { Log($"SerialToTcp fout: {ex.Message}"); }
     }
 
     // ── TCP → Serial ─────────────────────────────────────────────────────────
