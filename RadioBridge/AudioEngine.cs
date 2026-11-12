@@ -110,6 +110,10 @@ public class AudioEngine : IDisposable
     private TcpClient?     _tcpClient;
     private NetworkStream? _stream;
 
+    // ── Seriële bruggen (server kant) ────────────────────────────────────────
+    private SerialBridge? _serialBridge1;
+    private SerialBridge? _serialBridge2;
+
     // ── Virtuele seriële poorten (client kant) ────────────────────────────────
     private VirtualSerialBridge? _vSerial1;
     private VirtualSerialBridge? _vSerial2;
@@ -200,6 +204,7 @@ public class AudioEngine : IDisposable
             await SendConfigAsync(cfg, _cts.Token);
 
             ConfigReceived?.Invoke(cfg);
+            StartSerialBridges(cfg);
             StartAudio(captureIdx, playbackIdx, cfg.NoiseSuppress, cfg.UseOpus, cfg.OpusBitrate);
         }
         catch (OperationCanceledException) { }
@@ -310,6 +315,27 @@ public class AudioEngine : IDisposable
         }
     }
 
+    // ── Seriële bruggen server-kant ───────────────────────────────────────────
+
+    private void StartSerialBridges(BridgeConfig cfg)
+    {
+        if (cfg.Port1.Enabled && !string.IsNullOrEmpty(cfg.Port1.ComPort))
+        {
+            _serialBridge1 = new SerialBridge("CAT");
+            _serialBridge1.StatusChanged += msg => Log(msg);
+            _serialBridge1.Error         += msg => Log($"⚠ {msg}");
+            _ = _serialBridge1.StartServerAsync(cfg.Port1.ComPort, cfg.Port1.Baud, cfg.Port1.TcpPort);
+        }
+
+        if (cfg.Port2.Enabled && !string.IsNullOrEmpty(cfg.Port2.ComPort))
+        {
+            _serialBridge2 = new SerialBridge("PTT");
+            _serialBridge2.StatusChanged += msg => Log(msg);
+            _serialBridge2.Error         += msg => Log($"⚠ {msg}");
+            _ = _serialBridge2.StartServerAsync(cfg.Port2.ComPort, cfg.Port2.Baud, cfg.Port2.TcpPort);
+        }
+    }
+
     // ── Tone injection ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -355,6 +381,10 @@ public class AudioEngine : IDisposable
         try { _vSerial1?.Stop(); _vSerial1?.Dispose(); } catch { }
         try { _vSerial2?.Stop(); _vSerial2?.Dispose(); } catch { }
         _vSerial1 = null; _vSerial2 = null;
+
+        try { _serialBridge1?.Stop(); _serialBridge1?.Dispose(); } catch { }
+        try { _serialBridge2?.Stop(); _serialBridge2?.Dispose(); } catch { }
+        _serialBridge1 = null; _serialBridge2 = null;
 
         try { _stream?.Close(); } catch { }
         _stream = null;
