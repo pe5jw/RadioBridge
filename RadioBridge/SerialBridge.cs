@@ -40,12 +40,27 @@ public class SerialBridge : IDisposable
             _listener = new TcpListener(IPAddress.Any, tcpPort);
             _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _listener.Start();
-            _tcp = await _listener.AcceptTcpClientAsync(_cts.Token);
-            _tcp.NoDelay = true;
-            _stream = _tcp.GetStream();
-            _disconnectFired = false;
-            Log($"Serieel verbonden");
-            await StartSerialAsync(comPort, baud);
+
+            while (!_cts.Token.IsCancellationRequested)
+            {
+                // Wacht op volgende verbinding
+                _tcp = await _listener.AcceptTcpClientAsync(_cts.Token);
+                _tcp.NoDelay = true;
+                _stream = _tcp.GetStream();
+                _disconnectFired = false;
+                Log($"Serieel verbonden");
+                await StartSerialAsync(comPort, baud);
+
+                // Verbinding verbroken — wacht even en luister opnieuw
+                try { _serial?.Close(); } catch { }
+                try { _stream?.Close(); } catch { }
+                try { _tcp?.Close();   } catch { }
+                _serial = null; _stream = null; _tcp = null;
+                _running = false;
+
+                if (!_cts.Token.IsCancellationRequested)
+                    Log($"Wacht op nieuwe verbinding op TCP {tcpPort}...");
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Error?.Invoke($"[{_name}] Server fout: {ex.Message}"); }
