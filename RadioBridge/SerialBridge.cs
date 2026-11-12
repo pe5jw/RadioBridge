@@ -106,6 +106,7 @@ public class SerialBridge : IDisposable
         }
 
         _running = true;
+        Log($"Serieel geopend: {comPort} {baud} baud, start data-loops");
 
         // Wacht tot één van beide richtingen klaar is (verbinding verbroken)
         // Serial → TCP (polling loop — DataReceived event werkt niet betrouwbaar op Linux)
@@ -113,9 +114,13 @@ public class SerialBridge : IDisposable
         // TCP → Serial
         var t2 = Task.Run(() => TcpToSerialAsync(_cts.Token));
 
+        Log($"Data-loops gestart, wachten...");
         await Task.WhenAny(t1, t2);
+        Log($"Een data-loop gestopt, opruimen");
         // Wacht kort zodat de andere taak ook kan afsluiten
-        await Task.WhenAll(t1, t2).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        try { await Task.WhenAll(t1, t2).WaitAsync(TimeSpan.FromSeconds(2)); }
+        catch { }
+        Log($"Beide data-loops gestopt");
     }
 
     // ── Serial → TCP ─────────────────────────────────────────────────────────
@@ -141,9 +146,10 @@ public class SerialBridge : IDisposable
                     await _stream.WriteAsync(buf.AsMemory(0, n), ct);
             }
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException)    { _running = false; }
-        catch (Exception ex) { Log($"SerialToTcp fout: {ex.Message}"); }
+        catch (OperationCanceledException) { Log("SerialToTcp: geannuleerd"); }
+        catch (ObjectDisposedException ex) { Log($"SerialToTcp: disposed — {ex.Message}"); _running = false; }
+        catch (Exception ex) { Log($"SerialToTcp fout ({ex.GetType().Name}): {ex.Message}"); }
+        Log("SerialToTcp loop klaar");
     }
 
     // ── TCP → Serial ─────────────────────────────────────────────────────────
@@ -166,16 +172,18 @@ public class SerialBridge : IDisposable
                     _serial.Write(buf, 0, n);
             }
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException)    { }
+        catch (OperationCanceledException) { Log("TcpToSerial: geannuleerd"); }
+        catch (ObjectDisposedException ex) { Log($"TcpToSerial: disposed — {ex.Message}"); }
         catch (Exception ex)
         {
+            Log($"TcpToSerial fout ({ex.GetType().Name}): {ex.Message}");
             if (_running)
             {
                 Error?.Invoke($"[{_name}] Verbinding verbroken: {ex.Message}");
                 FireDisconnect();
             }
         }
+        Log("TcpToSerial loop klaar");
     }
 
     private void FireDisconnect()
