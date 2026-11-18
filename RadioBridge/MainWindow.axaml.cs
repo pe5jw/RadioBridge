@@ -227,8 +227,8 @@ public partial class MainWindow : Window
             }
         };
 
-        _spServerPorts.Children.Add(Section("Serieel 1  (CAT)", new StackPanel { Children = { _chkPort1, SerialGrid(_cbPort1Com, _nudPort1Baud, _nudPort1Tcp) } }));
-        _spServerPorts.Children.Add(Section("Serieel 2  (PTT)", new StackPanel { Children = { _chkPort2, SerialGrid(_cbPort2Com, _nudPort2Baud, _nudPort2Tcp) } }));
+        _spServerPorts.Children.Add(Section("Seriële poort 1", new StackPanel { Children = { _chkPort1, SerialGrid(_cbPort1Com, _nudPort1Baud, _nudPort1Tcp) } }));
+        _spServerPorts.Children.Add(Section("Seriële poort 2", new StackPanel { Children = { _chkPort2, SerialGrid(_cbPort2Com, _nudPort2Baud, _nudPort2Tcp) } }));
 
         // Client: com0com / PTY
         _spVComClient.Children.Add(_tblVirtualInfo);
@@ -239,9 +239,9 @@ public partial class MainWindow : Window
             RowDefinitions    = new RowDefinitions("Auto,6,Auto"),
             Children          =
             {
-                RowColLabel("CAT:", 0, 0),
+                RowColLabel("Poort 1:", 0, 0),
                 SetRowCol(_cbVCom1, 0, 1),
-                RowColLabel("PTT:", 2, 0),
+                RowColLabel("Poort 2:", 2, 0),
                 SetRowCol(_cbVCom2, 2, 1),
             }
         });
@@ -568,8 +568,8 @@ public partial class MainWindow : Window
         {
             if (_rbClient.IsChecked == true)
             {
-                if (cfg.Port1.Enabled) AppendLog($"Server CAT: {cfg.Port1.ComPort} {cfg.Port1.Baud} baud → TCP {cfg.Port1.TcpPort}");
-                if (cfg.Port2.Enabled) AppendLog($"Server PTT: {cfg.Port2.ComPort} {cfg.Port2.Baud} baud → TCP {cfg.Port2.TcpPort}");
+                if (cfg.Port1.Enabled) AppendLog($"Server poort 1: {cfg.Port1.ComPort} {cfg.Port1.Baud} baud → TCP {cfg.Port1.TcpPort}");
+                if (cfg.Port2.Enabled) AppendLog($"Server poort 2: {cfg.Port2.ComPort} {cfg.Port2.Baud} baud → TCP {cfg.Port2.TcpPort}");
 
                 // Virtuele poort namen worden gelogged door AudioEngine zodra ze aangemaakt zijn
             }
@@ -676,7 +676,7 @@ public partial class MainWindow : Window
             _cbVCom2.Items.Add(new VComItem(pair.PortB, label));
         }
 
-        // Selecteer eerste paar voor CAT, tweede voor PTT
+        // Selecteer eerste paar voor poort 1, tweede voor poort 2
         _cbVCom1.SelectedIndex = pairs.Count > 0 ? 1 : 0;
         _cbVCom2.SelectedIndex = pairs.Count > 1 ? 2 : 0;
 
@@ -691,7 +691,7 @@ public partial class MainWindow : Window
             sb.AppendLine($"✅  {pairs.Count} com0com paar(en) gevonden:");
             foreach (var pair in pairs)
                 sb.AppendLine($"  Paar {pair.PairId}: logger → {pair.PortA}   RadioBridge → {pair.PortB}");
-            sb.Append("Selecteer hieronder welk paar voor CAT en PTT gebruikt wordt.");
+            sb.Append("Selecteer hieronder welk paar voor poort 1 en poort 2 gebruikt wordt.");
         }
         else
         {

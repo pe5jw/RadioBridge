@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Ports;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -16,7 +17,11 @@ namespace RadioBridge;
 ///   - Linux  : maakt een pseudo-terminal (PTY) aan via openpty() — geen driver nodig
 ///   - Windows: gebruikt een bestaand com0com null-modem paar (detecteert automatisch)
 ///
-/// Verkeer: Logger ↔ virtuele COM/PTY ↔ VirtualSerialBridge ↔ TCP ↔ server SerialBridge ↔ radio COM
+/// Verkeer: App ↔ virtuele COM/PTY ↔ VirtualSerialBridge ↔ TCP ↔ server SerialBridge ↔ apparaat
+///
+/// De lokale (virtuele) poort wordt één keer geopend. De TCP-verbinding naar de
+/// server wordt automatisch (opnieuw) opgezet als hij wegvalt of de server nog
+/// niet luistert.
 /// </summary>
 public sealed class VirtualSerialBridge : IDisposable
 {
@@ -24,186 +29,233 @@ public sealed class VirtualSerialBridge : IDisposable
     public event Action<string>? StatusChanged;
     public event Action<string>? Error;
 
-    private void Log(string msg)  => StatusChanged?.Invoke(msg);
-    private void Err(string msg)  => Error?.Invoke(msg);
+    private readonly string _name;
+    private void Log(string msg) => StatusChanged?.Invoke($"[{_name}] {msg}");
+    private void Err(string msg) => Error?.Invoke($"[{_name}] {msg}");
+
+    public VirtualSerialBridge(string name = "Poort") => _name = name;
+
+    /// <summary>Log elk pakket als hex. Handig bij debuggen.</summary>
+    public bool TraceBytes { get; set; } = true;
 
     // ── State ─────────────────────────────────────────────────────────────────
-    private CancellationTokenSource _cts = new();
+    private readonly CancellationTokenSource _cts = new();
+    private readonly object _lock = new();
     private string _virtualPort = "";
 
     // Linux PTY handles
     private int _masterFd = -1;
     private int _slaveFd  = -1;
 
-    // Windows: gebruik gewone FileStream op de com0com "inside" poort
-    private FileStream? _comStream;
+    // Windows: com0com "inside" poort
+    private SerialPort? _com;
 
-    // TCP
+    // TCP (onder _lock)
     private TcpClient?     _tcp;
     private NetworkStream? _net;
 
-    /// <summary>Welke virtuele poort de logger moet gebruiken (bijv. /dev/pts/5 of COM11)</summary>
+    /// <summary>Welke virtuele poort de app moet gebruiken (bijv. /dev/pts/5 of COM7)</summary>
     public string VirtualPortName => _virtualPort;
 
     // ── Start ─────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Verbind met de TCP serial server op host:tcpPort en koppel aan een virtuele COM.
-    /// virtualPort: op Windows het "inside" com0com poort (bijv. "COM11"); op Linux leeg laten → auto PTY.
+    /// Open de lokale virtuele poort en start de TCP-verbinding naar host:tcpPort.
+    /// virtualPort: op Windows de com0com "inside" poort (bijv. "COM8"); op Linux leeg → auto PTY.
+    /// Keert terug zodra de lokale poort open is; TCP verbindt op de achtergrond.
     /// </summary>
-    public async Task StartAsync(string host, int tcpPort, string virtualPort = "")
+    public Task StartAsync(string host, int tcpPort, string virtualPort = "")
     {
-        try
-        {
-            Log($"Virtueel serieel: verbinden met {host}:{tcpPort}...");
+        var ct = _cts.Token;
+        bool ok = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? OpenWindows(virtualPort)
+            : OpenLinux();
+        if (!ok) return Task.CompletedTask;
 
-            _tcp = new TcpClient { NoDelay = true };
-            await _tcp.ConnectAsync(host, tcpPort, _cts.Token);
-            _net = _tcp.GetStream();
-
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                await StartWindowsAsync(virtualPort);
-            else
-                await StartLinuxAsync();
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Err($"Virtueel serieel fout: {ex.Message}"); }
+        _ = Task.Run(() => LocalToTcpAsync(ct));
+        _ = Task.Run(() => ConnectLoopAsync(host, tcpPort, ct));
+        return Task.CompletedTask;
     }
 
-    // ── Linux PTY ─────────────────────────────────────────────────────────────
+    // ── Lokale poort openen ───────────────────────────────────────────────────
 
-    private Task StartLinuxAsync()
+    private bool OpenLinux()
     {
         (_masterFd, _slaveFd, _virtualPort) = OpenPty();
         if (_masterFd < 0)
         {
             Err("openpty() mislukt — PTY niet beschikbaar");
-            return Task.CompletedTask;
+            return false;
         }
-
-        Log($"Virtuele COM aangemaakt: {_virtualPort}");
-        Log($"  → Verbind je logger met {_virtualPort}");
-
-        _ = Task.Run(() => PtyToTcpAsync(_cts.Token));
-        _ = Task.Run(() => TcpToPtyAsync(_cts.Token));
-
-        return Task.CompletedTask;
+        MakeRaw(_slaveFd);   // geen echo / CR-LF vertaling: binaire CAT moet ongewijzigd door
+        Log($"Virtuele poort aangemaakt: {_virtualPort}");
+        Log($"  → Verbind je app met {_virtualPort}");
+        return true;
     }
 
-    private async Task PtyToTcpAsync(CancellationToken ct)
-    {
-        var buf = new byte[256];
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                int n = NativeRead(_masterFd, buf, buf.Length);
-                if (n <= 0) break;
-                await _net!.WriteAsync(buf.AsMemory(0, n), ct);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch { }
-    }
-
-    private async Task TcpToPtyAsync(CancellationToken ct)
-    {
-        var buf = new byte[256];
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                int n = await _net!.ReadAsync(buf, ct);
-                if (n == 0) break;
-                NativeWrite(_masterFd, buf, n);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch { }
-    }
-
-    // ── Windows com0com ───────────────────────────────────────────────────────
-
-    private Task StartWindowsAsync(string virtualPort)
+    private bool OpenWindows(string virtualPort)
     {
         if (string.IsNullOrEmpty(virtualPort))
         {
             Err("Geen com0com poort opgegeven.");
-            return Task.CompletedTask;
+            return false;
         }
-
         try
         {
-            // Open via kernel device path zodat we FileStream kunnen gebruiken
-            string devicePath = virtualPort.StartsWith(@"\\") ? virtualPort : $@"\\.\{virtualPort}";
-            _comStream = new FileStream(devicePath, FileMode.Open, FileAccess.ReadWrite,
-                FileShare.ReadWrite, 256, FileOptions.Asynchronous);
+            // SerialPort zet DCB en timeouts goed. Een kale FileStream op een COM-poort
+            // erft willekeurige timeouts, waardoor reads direct 0 bytes teruggeven.
+            _com = new SerialPort(virtualPort, 9600)   // baud is irrelevant bij com0com
+            {
+                ReadTimeout  = SerialPort.InfiniteTimeout,
+                WriteTimeout = 1000,
+                DtrEnable    = true,   // app ziet DSR/DCD → "apparaat aanwezig"
+                RtsEnable    = true,   // app ziet CTS → mag zenden bij RTS/CTS handshake
+            };
+            _com.Open();
             _virtualPort = virtualPort;
-
             Log($"com0com poort geopend: {virtualPort}");
-            Log($"  → Verbind je logger met {virtualPort}");
-
-            _ = Task.Run(() => Com0ComToTcpAsync(_cts.Token));
-            _ = Task.Run(() => TcpToCom0ComAsync(_cts.Token));
+            return true;
         }
         catch (Exception ex)
         {
             Err($"Kan {virtualPort} niet openen: {ex.Message}");
+            return false;
         }
-
-        return Task.CompletedTask;
     }
 
-    private async Task Com0ComToTcpAsync(CancellationToken ct)
+    // ── TCP verbinden (met herverbinden) ──────────────────────────────────────
+
+    private async Task ConnectLoopAsync(string host, int tcpPort, CancellationToken ct)
     {
-        var buf = new byte[256];
-        try
+        bool firstAttempt = true;
+        while (!ct.IsCancellationRequested)
         {
-            while (!ct.IsCancellationRequested && _comStream != null)
+            var tcp = new TcpClient { NoDelay = true };
+            try
             {
-                int n = await _comStream.ReadAsync(buf, ct);
-                if (n <= 0) break;
-                await _net!.WriteAsync(buf.AsMemory(0, n), ct);
+                if (firstAttempt) Log($"Verbinden met {host}:{tcpPort}...");
+                await tcp.ConnectAsync(host, tcpPort, ct);
+            }
+            catch (OperationCanceledException) { tcp.Dispose(); break; }
+            catch (Exception ex)
+            {
+                tcp.Dispose();
+                if (firstAttempt) Log($"Server nog niet bereikbaar ({ex.Message}) — blijf proberen");
+                firstAttempt = false;
+                await DelayAsync(2000, ct);
+                continue;
+            }
+
+            var net = tcp.GetStream();
+            lock (_lock) { _tcp = tcp; _net = net; }
+            Log($"Verbonden met {host}:{tcpPort}");
+            firstAttempt = true;
+
+            await TcpToLocalAsync(net, ct);   // blokkeert tot verbinding wegvalt
+
+            lock (_lock)
+            {
+                if (_tcp == tcp) { _tcp = null; _net = null; }
+            }
+            try { tcp.Close(); } catch { }
+
+            if (!ct.IsCancellationRequested)
+            {
+                Log("Verbinding met server verbroken — opnieuw verbinden over 2 s");
+                await DelayAsync(2000, ct);
             }
         }
-        catch (OperationCanceledException) { }
-        catch { }
     }
 
-    private async Task TcpToCom0ComAsync(CancellationToken ct)
+    private static async Task DelayAsync(int ms, CancellationToken ct)
     {
-        var buf = new byte[256];
+        try { await Task.Delay(ms, ct); } catch (OperationCanceledException) { }
+    }
+
+    // ── TCP → lokale poort ────────────────────────────────────────────────────
+
+    private async Task TcpToLocalAsync(NetworkStream net, CancellationToken ct)
+    {
+        var buf = new byte[512];
         try
         {
-            while (!ct.IsCancellationRequested && _comStream != null)
+            while (!ct.IsCancellationRequested)
             {
-                int n = await _net!.ReadAsync(buf, ct);
+                int n = await net.ReadAsync(buf, ct);
                 if (n == 0) break;
-                await _comStream.WriteAsync(buf.AsMemory(0, n), ct);
-                await _comStream.FlushAsync(ct);
+                if (TraceBytes) Log($"← server {n}B: {BitConverter.ToString(buf, 0, n)}");
+
+                if (_com != null)
+                    await _com.BaseStream.WriteAsync(buf.AsMemory(0, n), ct);
+                else if (_masterFd >= 0)
+                    NativeWrite(_masterFd, buf, n);
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
+        catch (Exception ex) { if (!ct.IsCancellationRequested) Log($"TCP → {_virtualPort} fout: {ex.Message}"); }
+    }
+
+    // ── Lokale poort → TCP ────────────────────────────────────────────────────
+
+    private async Task LocalToTcpAsync(CancellationToken ct)
+    {
+        var buf = new byte[512];
+        while (!ct.IsCancellationRequested)
+        {
+            int n;
+            try
+            {
+                if (_com != null)
+                    n = await _com.BaseStream.ReadAsync(buf.AsMemory(), ct);
+                else
+                    n = NativeRead(_masterFd, buf, buf.Length);   // blokkeert (eigen thread)
+            }
+            catch (OperationCanceledException) { break; }
+            catch (TimeoutException)           { continue; }
+            catch (Exception ex)
+            {
+                if (!ct.IsCancellationRequested) Err($"Lezen van {_virtualPort} mislukt: {ex.Message}");
+                break;
+            }
+
+            if (n <= 0)
+            {
+                // PTY: geen app aan de slave-kant geeft soms EIO/0 — even wachten en opnieuw.
+                await DelayAsync(20, ct);
+                continue;
+            }
+
+            if (TraceBytes) Log($"→ server {n}B: {BitConverter.ToString(buf, 0, n)}");
+
+            NetworkStream? net;
+            lock (_lock) net = _net;
+            if (net == null) continue;   // nog niet verbonden: weggooien
+
+            try { await net.WriteAsync(buf.AsMemory(0, n), ct); }
+            catch (Exception ex) { if (!ct.IsCancellationRequested) Log($"Schrijven naar server mislukt: {ex.Message}"); }
+        }
     }
 
     // ── Stop ─────────────────────────────────────────────────────────────────
 
     public void Stop()
     {
-        _cts.Cancel();
+        if (_cts.IsCancellationRequested) return;
+        try { _cts.Cancel(); } catch { }
 
         if (_masterFd >= 0) { NativeClose(_masterFd); _masterFd = -1; }
         if (_slaveFd  >= 0) { NativeClose(_slaveFd);  _slaveFd  = -1; }
 
-        try { _comStream?.Close(); } catch { }
-        _comStream = null;
+        try { _com?.Close(); _com?.Dispose(); } catch { }
+        _com = null;
 
-        try { _net?.Close();  } catch { }
-        try { _tcp?.Close();  } catch { }
-        _net = null; _tcp = null;
+        lock (_lock)
+        {
+            try { _net?.Close(); } catch { }
+            try { _tcp?.Close(); } catch { }
+            _net = null; _tcp = null;
+        }
 
-        _cts = new CancellationTokenSource();
         _virtualPort = "";
         Log("Virtueel serieel gestopt.");
     }
@@ -368,6 +420,26 @@ public sealed class VirtualSerialBridge : IDisposable
     private static int  NativeRead(int fd, byte[] buf, int n)  => read(fd, buf, n);
     private static int  NativeWrite(int fd, byte[] buf, int n) => write(fd, buf, n);
     private static void NativeClose(int fd)                    => close(fd);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int tcgetattr(int fd, byte[] termios);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int tcsetattr(int fd, int optionalActions, byte[] termios);
+
+    [DllImport("libc")]
+    private static extern void cfmakeraw(byte[] termios);
+
+    /// <summary>Zet een tty in raw mode (geen echo, geen regelbuffer, geen CR/LF vertaling).</summary>
+    private static void MakeRaw(int fd)
+    {
+        try
+        {
+            var t = new byte[256];   // ruim groter dan struct termios
+            if (tcgetattr(fd, t) == 0) { cfmakeraw(t); tcsetattr(fd, 0 /*TCSANOW*/, t); }
+        }
+        catch { }
+    }
 
     private static (int master, int slave, string slaveName) OpenPty()
     {

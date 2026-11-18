@@ -118,9 +118,9 @@ public class AudioEngine : IDisposable
     private VirtualSerialBridge? _vSerial1;
     private VirtualSerialBridge? _vSerial2;
 
-    /// <summary>Welk com0com "inside" poort voor CAT (Windows). Leeg = auto PTY (Linux).</summary>
+    /// <summary>Welk com0com "inside" poort voor poort 1 (Windows). Leeg = auto PTY (Linux).</summary>
     public string VirtualComPort1 { get; set; } = "";
-    /// <summary>Welk com0com "inside" poort voor PTT (Windows). Leeg = auto PTY (Linux).</summary>
+    /// <summary>Welk com0com "inside" poort voor poort 2 (Windows). Leeg = auto PTY (Linux).</summary>
     public string VirtualComPort2 { get; set; } = "";
 
     private CancellationTokenSource _cts = new();
@@ -296,22 +296,22 @@ public class AudioEngine : IDisposable
     {
         if (cfg.Port1.Enabled)
         {
-            _vSerial1 = new VirtualSerialBridge();
+            _vSerial1 = new VirtualSerialBridge("Poort 1");
             _vSerial1.StatusChanged += msg => Log(msg);
             _vSerial1.Error         += msg => Log($"⚠ {msg}");
             await _vSerial1.StartAsync(host, cfg.Port1.TcpPort, VirtualComPort1);
             if (!string.IsNullOrEmpty(_vSerial1.VirtualPortName))
-                Log($"CAT virtuele poort: {_vSerial1.VirtualPortName}");
+                Log($"Poort 1 virtueel: {_vSerial1.VirtualPortName}");
         }
 
         if (cfg.Port2.Enabled)
         {
-            _vSerial2 = new VirtualSerialBridge();
+            _vSerial2 = new VirtualSerialBridge("Poort 2");
             _vSerial2.StatusChanged += msg => Log(msg);
             _vSerial2.Error         += msg => Log($"⚠ {msg}");
             await _vSerial2.StartAsync(host, cfg.Port2.TcpPort, VirtualComPort2);
             if (!string.IsNullOrEmpty(_vSerial2.VirtualPortName))
-                Log($"PTT virtuele poort: {_vSerial2.VirtualPortName}");
+                Log($"Poort 2 virtueel: {_vSerial2.VirtualPortName}");
         }
     }
 
@@ -321,7 +321,7 @@ public class AudioEngine : IDisposable
     {
         if (cfg.Port1.Enabled && !string.IsNullOrEmpty(cfg.Port1.ComPort))
         {
-            _serialBridge1 = new SerialBridge("CAT");
+            _serialBridge1 = new SerialBridge("Poort 1");
             _serialBridge1.StatusChanged += msg => Log(msg);
             _serialBridge1.Error         += msg => Log($"⚠ {msg}");
             _ = _serialBridge1.StartServerAsync(cfg.Port1.ComPort, cfg.Port1.Baud, cfg.Port1.TcpPort);
@@ -329,7 +329,7 @@ public class AudioEngine : IDisposable
 
         if (cfg.Port2.Enabled && !string.IsNullOrEmpty(cfg.Port2.ComPort))
         {
-            _serialBridge2 = new SerialBridge("PTT");
+            _serialBridge2 = new SerialBridge("Poort 2");
             _serialBridge2.StatusChanged += msg => Log(msg);
             _serialBridge2.Error         += msg => Log($"⚠ {msg}");
             _ = _serialBridge2.StartServerAsync(cfg.Port2.ComPort, cfg.Port2.Baud, cfg.Port2.TcpPort);

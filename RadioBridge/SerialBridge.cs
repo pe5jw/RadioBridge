@@ -5,226 +5,200 @@ using System.Net.Sockets;
 namespace RadioBridge;
 
 /// <summary>
-/// Bridges a local serial port over TCP.
-/// Server side: listens on a TCP port, forwards data to/from a local COM port.
-/// Client side: connects to server, forwards data to/from a local COM port.
+/// Server-kant seriële brug: lokale COM-poort ↔ TCP.
 ///
-/// Two instances are used: one for CAT (port1) and one for PTT (port2).
+/// - De COM-poort wordt één keer geopend en blijft open zolang de brug draait.
+/// - Er is altijd maximaal één TCP-client actief. Een nieuwe verbinding vervangt
+///   de vorige, zodat een hangende of half-dode verbinding nooit blokkeert.
+/// - Data van de COM-poort zonder actieve client wordt weggegooid.
+///
+/// Volledig transparant: RadioBridge kent het protocol niet, dus werkt met
+/// elke transceiver of elk ander apparaat met een seriële poort.
 /// </summary>
-public class SerialBridge : IDisposable
+public sealed class SerialBridge : IDisposable
 {
+    private readonly string _name;               // "Poort 1" / "Poort 2" voor logging
+    private readonly CancellationTokenSource _cts = new();
+    private readonly object _lock = new();
+
     private SerialPort?  _serial;
     private TcpListener? _listener;
-    private TcpClient?   _tcp;
-    private NetworkStream? _stream;
-    private CancellationTokenSource _cts = new();
-    private bool _running;
-    private bool _disconnectFired;
-    private readonly string _name; // "CAT" or "PTT" for logging
+
+    // Huidige client (onder _lock)
+    private TcpClient?               _client;
+    private NetworkStream?           _clientStream;
+    private CancellationTokenSource? _sessionCts;
+
+    /// <summary>Log elk pakket als hex. Handig bij debuggen, uitzetten als alles werkt.</summary>
+    public bool TraceBytes { get; set; } = true;
 
     public event Action<string>? StatusChanged;
     public event Action<string>? Error;
-    public event Action?         ClientDisconnected;
 
     public SerialBridge(string name) => _name = name;
 
     private void Log(string msg) => StatusChanged?.Invoke($"[{_name}] {msg}");
+    private void Err(string msg) => Error?.Invoke($"[{_name}] {msg}");
 
-    // ── Server ────────────────────────────────────────────────────────────────
+    // ── Start ─────────────────────────────────────────────────────────────────
 
     public async Task StartServerAsync(string comPort, int baud, int tcpPort)
     {
+        var ct = _cts.Token;
+
+        // 1. COM-poort openen (blijft open)
         try
         {
-            Log($"Luisteren op TCP {tcpPort} → {comPort} {baud} baud");
-            _listener = new TcpListener(IPAddress.Any, tcpPort);
-            _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _listener.Start();
-
-            while (!_cts.Token.IsCancellationRequested)
+            _serial = new SerialPort(comPort, baud)
             {
-                // Wacht op volgende verbinding
-                _tcp = await _listener.AcceptTcpClientAsync(_cts.Token);
-                _tcp.NoDelay = true;
-                _stream = _tcp.GetStream();
-                _disconnectFired = false;
-                Log($"Serieel verbonden");
-                await StartSerialAsync(comPort, baud);
-
-                // Verbinding verbroken — wacht even en luister opnieuw
-                try { _serial?.Close(); } catch { }
-                try { _stream?.Close(); } catch { }
-                try { _tcp?.Close();   } catch { }
-                _serial = null; _stream = null; _tcp = null;
-                _running = false;
-
-                if (!_cts.Token.IsCancellationRequested)
-                    Log($"Wacht op nieuwe verbinding op TCP {tcpPort}...");
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Error?.Invoke($"[{_name}] Server fout: {ex.Message}"); }
-    }
-
-    // ── Client ────────────────────────────────────────────────────────────────
-
-    public async Task StartClientAsync(string host, int tcpPort, string comPort, int baud)
-    {
-        try
-        {
-            Log($"Verbinden met {host}:{tcpPort} → {comPort} {baud} baud");
-            _tcp = new TcpClient { NoDelay = true };
-            await _tcp.ConnectAsync(host, tcpPort, _cts.Token);
-            _stream = _tcp.GetStream();
-            _disconnectFired = false;
-            Log($"Verbonden");
-            await StartSerialAsync(comPort, baud);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Error?.Invoke($"[{_name}] Verbinding mislukt: {ex.Message}"); }
-    }
-
-    // ── Serial setup ──────────────────────────────────────────────────────────
-
-    private async Task StartSerialAsync(string comPort, int baud)
-    {
-        _serial = new SerialPort(comPort, baud)
-        {
-            ReadTimeout  = SerialPort.InfiniteTimeout,
-            WriteTimeout = 500,
-            DtrEnable    = true,
-            RtsEnable    = false,
-        };
-        try
-        {
+                ReadTimeout  = SerialPort.InfiniteTimeout,
+                WriteTimeout = 1000,
+                DtrEnable    = true,   // veel CAT-kabels halen voeding uit DTR
+                RtsEnable    = false,  // RTS hoog = PTT op sommige interfaces
+            };
             _serial.Open();
+            Log($"{comPort} geopend ({baud} baud)");
         }
         catch (Exception ex)
         {
-            Error?.Invoke($"[{_name}] Kan {comPort} niet openen: {ex.Message}");
+            Err($"Kan {comPort} niet openen: {ex.Message}");
             return;
         }
 
-        _running = true;
-        Log($"Serieel geopend: {comPort} {baud} baud, start data-loops");
+        _ = Task.Run(() => SerialReadLoopAsync(ct));
 
-        // Wacht tot één van beide richtingen klaar is (verbinding verbroken)
-        // Serial → TCP (polling loop — DataReceived event werkt niet betrouwbaar op Linux)
-        var t1 = Task.Run(() => SerialToTcpAsync(_cts.Token));
-        // TCP → Serial
-        var t2 = Task.Run(() => TcpToSerialAsync(_cts.Token));
-
-        Log($"Data-loops gestart, wachten...");
-        await Task.WhenAny(t1, t2);
-        Log($"Een data-loop gestopt, opruimen");
-        // Wacht kort zodat de andere taak ook kan afsluiten
-        try { await Task.WhenAll(t1, t2).WaitAsync(TimeSpan.FromSeconds(2)); }
-        catch { }
-        Log($"Beide data-loops gestopt");
-    }
-
-    // ── Serial → TCP ─────────────────────────────────────────────────────────
-
-    private async Task SerialToTcpAsync(CancellationToken ct)
-    {
-        var buf = new byte[256];
+        // 2. TCP accepteren
         try
         {
-            while (!ct.IsCancellationRequested && _serial?.IsOpen == true)
-            {
-                int n = 0;
-                try
-                {
-                    // BaseStream.ReadAsync werkt cross-platform betrouwbaar
-                    n = await _serial.BaseStream.ReadAsync(buf, 0, buf.Length, ct);
-                }
-                catch (TimeoutException) { continue; }
+            _listener = new TcpListener(IPAddress.Any, tcpPort);
+            _listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _listener.Start();
+            Log($"Luisteren op TCP {tcpPort} → {comPort}");
 
-                if (n <= 0) break;
-                Log($"← Serieel {n}B → TCP: {BitConverter.ToString(buf, 0, n)}");
-                if (_stream != null)
-                    await _stream.WriteAsync(buf.AsMemory(0, n), ct);
+            while (!ct.IsCancellationRequested)
+            {
+                var client = await _listener.AcceptTcpClientAsync(ct);
+                client.NoDelay = true;
+                AttachClient(client);
             }
         }
-        catch (OperationCanceledException) { Log("SerialToTcp: geannuleerd"); }
-        catch (ObjectDisposedException ex) { Log($"SerialToTcp: disposed — {ex.Message}"); _running = false; }
-        catch (Exception ex) { Log($"SerialToTcp fout ({ex.GetType().Name}): {ex.Message}"); }
-        Log("SerialToTcp loop klaar");
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException)    { }
+        catch (Exception ex) { if (!ct.IsCancellationRequested) Err($"TCP server fout: {ex.Message}"); }
     }
 
-    // ── TCP → Serial ─────────────────────────────────────────────────────────
+    // ── Client beheer ─────────────────────────────────────────────────────────
 
-    private async Task TcpToSerialAsync(CancellationToken ct)
+    private void AttachClient(TcpClient client)
     {
-        var buf = new byte[256];
+        CancellationTokenSource session;
+        NetworkStream stream = client.GetStream();
+        lock (_lock)
+        {
+            if (_client != null)
+            {
+                Log("Nieuwe client — vorige verbinding wordt gesloten");
+                DropClientLocked();
+            }
+            _client       = client;
+            _clientStream = stream;
+            _sessionCts   = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            session       = _sessionCts;
+        }
+        Log($"Client verbonden: {client.Client.RemoteEndPoint}");
+        _ = Task.Run(() => TcpReadLoopAsync(client, stream, session.Token));
+    }
+
+    private void DropClientLocked()
+    {
+        try { _sessionCts?.Cancel(); } catch { }
+        try { _client?.Close();      } catch { }
+        _client = null; _clientStream = null; _sessionCts = null;
+    }
+
+    // ── TCP → COM ─────────────────────────────────────────────────────────────
+
+    private async Task TcpReadLoopAsync(TcpClient client, NetworkStream stream, CancellationToken ct)
+    {
+        var buf = new byte[512];
         try
         {
-            while (!ct.IsCancellationRequested && _stream != null)
+            while (!ct.IsCancellationRequested)
             {
-                int n = await _stream.ReadAsync(buf, ct);
-                if (n == 0)
-                {
-                    FireDisconnect();
-                    break;
-                }
-                Log($"→ TCP {n}B → Serieel: {BitConverter.ToString(buf, 0, n)}");
-                if (_serial?.IsOpen == true)
-                    _serial.Write(buf, 0, n);
+                int n = await stream.ReadAsync(buf, ct);
+                if (n == 0) break;   // client sloot netjes af
+                if (TraceBytes) Log($"→ radio {n}B: {BitConverter.ToString(buf, 0, n)}");
+
+                var s = _serial;
+                if (s?.IsOpen == true) s.Write(buf, 0, n);
             }
         }
-        catch (OperationCanceledException) { Log("TcpToSerial: geannuleerd"); }
-        catch (ObjectDisposedException ex) { Log($"TcpToSerial: disposed — {ex.Message}"); }
-        catch (Exception ex)
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!ct.IsCancellationRequested) Log($"Client fout: {ex.Message}"); }
+
+        lock (_lock)
         {
-            Log($"TcpToSerial fout ({ex.GetType().Name}): {ex.Message}");
-            if (_running)
+            if (_client == client)
             {
-                Error?.Invoke($"[{_name}] Verbinding verbroken: {ex.Message}");
-                FireDisconnect();
+                DropClientLocked();
+                Log("Client verbroken — wacht op nieuwe verbinding");
             }
         }
-        Log("TcpToSerial loop klaar");
     }
 
-    private void FireDisconnect()
+    // ── COM → TCP ─────────────────────────────────────────────────────────────
+
+    private async Task SerialReadLoopAsync(CancellationToken ct)
     {
-        if (!_disconnectFired) { _disconnectFired = true; ClientDisconnected?.Invoke(); }
+        var buf = new byte[512];
+        while (!ct.IsCancellationRequested)
+        {
+            int n;
+            try
+            {
+                n = await _serial!.BaseStream.ReadAsync(buf.AsMemory(), ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (TimeoutException)           { continue; }
+            catch (Exception ex)
+            {
+                if (!ct.IsCancellationRequested) Err($"Lezen van COM-poort mislukt: {ex.Message}");
+                break;
+            }
+
+            if (n <= 0) { await Task.Delay(5, ct).ContinueWith(_ => { }); continue; }
+            if (TraceBytes) Log($"← radio {n}B: {BitConverter.ToString(buf, 0, n)}");
+
+            NetworkStream? stream;
+            lock (_lock) stream = _clientStream;
+            if (stream == null) continue;   // geen client: weggooien
+
+            try { await stream.WriteAsync(buf.AsMemory(0, n), ct); }
+            catch (Exception ex) { if (!ct.IsCancellationRequested) Log($"Schrijven naar client mislukt: {ex.Message}"); }
+        }
     }
 
     // ── Stop ─────────────────────────────────────────────────────────────────
 
     public void Stop()
     {
-        if (!_running && _tcp == null && _listener == null) return;
-        _cts.Cancel();
-        _running = false;
+        if (_cts.IsCancellationRequested) return;
+        try { _cts.Cancel(); } catch { }
 
-        try { _serial?.Close(); }  catch { }
-        try { _serial?.Dispose(); } catch { }
-        _serial = null;
-
-        try { _stream?.Close(); } catch { }
-        _stream = null;
-
-        try
-        {
-            if (_tcp?.Client?.Connected == true)
-                _tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Linger, new LingerOption(true, 0));
-            _tcp?.Close();
-        }
-        catch { }
-        _tcp = null;
+        lock (_lock) DropClientLocked();
 
         try { _listener?.Stop(); } catch { }
         _listener = null;
 
-        _cts = new CancellationTokenSource();
+        try { _serial?.Close(); _serial?.Dispose(); } catch { }
+        _serial = null;
+
         Log("Gestopt.");
     }
 
     public void Dispose() => Stop();
 
-    // ── Available ports ───────────────────────────────────────────────────────
+    // ── Beschikbare poorten ───────────────────────────────────────────────────
 
     public static string[] GetPortNames()
     {
