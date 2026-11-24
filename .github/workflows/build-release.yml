@@ -113,8 +113,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $VERSION" --notes "RadioBridge $VERSION"
+            || gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $RELEASE_TAG" --notes "RadioBridge $RELEASE_TAG"
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             "RadioBridge-${RELEASE_TAG}-win-x64.zip" \
             "RadioBridge-${RELEASE_TAG}-linux-x64.zip"
-          echo "Build ${GITHUB_SHA::7} geüpload naar $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build ${GITHUB_SHA::7} geüpload naar $RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
