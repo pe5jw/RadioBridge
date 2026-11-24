@@ -68,6 +68,17 @@ public partial class MainWindow : Window
     private readonly StackPanel    _spVComClient    = new() { Spacing = 6 };
 
     // Testtoon
+    private readonly CheckBox      _chkVu        = new() { Content = "VU-meters tonen", IsChecked = true, Margin = new Thickness(0,6,0,0) };
+
+    // Geminimaliseerd: niets bijtekenen (scheelt veel CPU, zeker via RDP)
+    private bool _uiPaused;
+    private string _lastStatus = "Gestopt";
+    private bool _lastStatusErr;
+    private static readonly IBrush StatusOkBg   = new SolidColorBrush(Color.Parse("#1a3a1a"));
+    private static readonly IBrush StatusErrBg  = new SolidColorBrush(Color.Parse("#3a1a1a"));
+    private static readonly IBrush StatusOkFg   = new SolidColorBrush(Color.Parse("#6fbf6f"));
+    private static readonly IBrush StatusErrFg  = new SolidColorBrush(Color.Parse("#bf6f6f"));
+
     private readonly CheckBox      _chkTone      = new() { Content = "Testtoon injecteren (sinusgolf)" };
     private readonly Slider        _sldToneFreq  = new() { Minimum = 100, Maximum = 3000, Value = 1000, Width = 220, TickFrequency = 100, IsSnapToTickEnabled = true };
     private readonly TextBlock     _tblToneFreq  = new() { Text = "1000 Hz", Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center, Width = 60 };
@@ -107,6 +118,7 @@ public partial class MainWindow : Window
         FontSize   = 13;
 
         BuildUI();
+        PropertyChanged += (_, e) => { if (e.Property == WindowStateProperty) OnWindowStateChanged(); };
         PopulateDevices();
         PopulatePresets();
         PopulateSerialPorts();
@@ -210,7 +222,8 @@ public partial class MainWindow : Window
         pbVolRow.Children.Add(_sldPbVol); pbVolRow.Children.Add(_tblPbVol); pbVolRow.Children.Add(vuPbContainer);
         Grid.SetRow(pbVolRow, 6); Grid.SetColumn(pbVolRow, 1); devGrid.Children.Add(pbVolRow);
 
-        leftCol.Children.Add(Section("🎙  Audio", devGrid));
+        leftCol.Children.Add(Section("🎙  Audio", new StackPanel { Children = { devGrid, _chkVu } }));
+        _chkVu.IsCheckedChanged += (s, e) => { _chkVuOn = _chkVu.IsChecked == true; if (!_chkVuOn) { _vuCapBar.Width = 0; _vuPbBar.Width = 0; } };
 
         // Codec + ruis
         leftCol.Children.Add(Section("Codec", new StackPanel
@@ -441,16 +454,25 @@ public partial class MainWindow : Window
 
     private void SetStatus(string text, bool error = false)
     {
-        Dispatcher.UIThread.Post(() =>
-        {
-            _tblStatus.Text       = text;
-            _pnlStatus.Background = error
-                ? new SolidColorBrush(Color.Parse("#3a1a1a"))
-                : new SolidColorBrush(Color.Parse("#1a3a1a"));
-            _tblStatus.Foreground = error
-                ? new SolidColorBrush(Color.Parse("#bf6f6f"))
-                : new SolidColorBrush(Color.Parse("#6fbf6f"));
-        });
+        _lastStatus = text; _lastStatusErr = error;
+        if (_uiPaused) return;
+        Dispatcher.UIThread.Post(ApplyStatus);
+    }
+
+    private void ApplyStatus()
+    {
+        _tblStatus.Text       = _lastStatus;
+        _pnlStatus.Background = _lastStatusErr ? StatusErrBg : StatusOkBg;
+        _tblStatus.Foreground = _lastStatusErr ? StatusErrFg : StatusOkFg;
+    }
+
+    private void OnWindowStateChanged()
+    {
+        _uiPaused = WindowState == WindowState.Minimized;
+        if (_uiPaused) return;
+        // Terug zichtbaar: alles in één keer bijwerken
+        ApplyStatus();
+        FlushLog();
     }
 
     // Logregels worden verzameld en hooguit 10x per seconde naar de UI geschreven,
@@ -461,6 +483,12 @@ public partial class MainWindow : Window
     private void AppendLog(string msg)
     {
         _logQueue.Enqueue($"[{DateTime.Now:HH:mm:ss}]  {msg}");
+        if (_uiPaused)
+        {
+            // Niet tekenen, wel bewaren (begrensd) voor als het venster terugkomt
+            while (_logQueue.Count > MaxLogLines && _logQueue.TryDequeue(out _)) { }
+            return;
+        }
         if (Interlocked.Exchange(ref _logFlushPending, 1) == 1) return;
         // AppendLog kan vanaf elke thread komen; flush altijd op de UI-thread
         Dispatcher.UIThread.Post(async () => { await Task.Delay(100); FlushLog(); });
@@ -469,6 +497,7 @@ public partial class MainWindow : Window
     private void FlushLog()
     {
         Interlocked.Exchange(ref _logFlushPending, 0);
+        if (_uiPaused) return;
         var lines = new List<string>(_logBuf.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
         while (_logQueue.TryDequeue(out var line)) lines.Add(line);
         if (lines.Count > MaxLogLines) lines.RemoveRange(0, lines.Count - MaxLogLines);
@@ -602,10 +631,12 @@ public partial class MainWindow : Window
     private static readonly IBrush VuYellow = new SolidColorBrush(Color.Parse("#ffc107"));
     private static readonly IBrush VuRed    = new SolidColorBrush(Color.Parse("#f44336"));
     private int _vuUpdatePending;
+    private volatile bool _chkVuOn = true;   // kopie van _chkVu, leesbaar vanaf de audio-thread
     private float _vuCap, _vuPb;
 
     private void OnLevelChanged(float capLevel, float pbLevel)
     {
+        if (_uiPaused || _chkVuOn == false) return;
         _vuCap = capLevel; _vuPb = pbLevel;
         // Max één openstaande UI-update; tussenliggende waarden worden overgeslagen
         if (Interlocked.Exchange(ref _vuUpdatePending, 1) == 1) return;
@@ -774,6 +805,7 @@ public partial class MainWindow : Window
             _sldCapVol.Value    = Math.Clamp(st.CaptureVolume,  _sldCapVol.Minimum, _sldCapVol.Maximum);
             _sldPbVol.Value     = Math.Clamp(st.PlaybackVolume, _sldPbVol.Minimum,  _sldPbVol.Maximum);
             _chkNoise.IsChecked = st.NoiseFilter;
+            _chkVu.IsChecked    = st.ShowVuMeters;
 
             _chkPort1.IsChecked = st.Serial1.Enabled;
             SelectByText(_cbPort1Com, st.Serial1.ComPort);
@@ -807,6 +839,7 @@ public partial class MainWindow : Window
         st.CaptureVolume  = _sldCapVol.Value;
         st.PlaybackVolume = _sldPbVol.Value;
         st.NoiseFilter    = _chkNoise.IsChecked == true;
+        st.ShowVuMeters   = _chkVu.IsChecked == true;
 
         st.Serial1.Enabled = _chkPort1.IsChecked == true;
         st.Serial1.ComPort = _cbPort1Com.SelectedItem?.ToString() ?? st.Serial1.ComPort;
@@ -845,6 +878,7 @@ public partial class MainWindow : Window
 
         _rbServer.IsCheckedChanged += Changed;
         _chkNoise.IsCheckedChanged += Changed;
+        _chkVu.IsCheckedChanged    += Changed;
         _chkPort1.IsCheckedChanged += Changed;
         _chkPort2.IsCheckedChanged += Changed;
         _txtHost.TextChanged       += Changed;

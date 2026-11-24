@@ -21,6 +21,7 @@ public sealed class AppSettings
     public double PlaybackVolume { get; set; } = 100;
     public string Preset         { get; set; } = "";
     public bool   NoiseFilter    { get; set; }
+    public bool   ShowVuMeters   { get; set; } = true;
 
     // Server: seriële poorten
     public SerialSetting Serial1 { get; set; } = new() { TcpPort = 5001 };
