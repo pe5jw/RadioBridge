@@ -29,8 +29,16 @@ Write-Host ""
 
 # ── Stap 1: opruimen ──────────────────────────────────────────────────────────
 Write-Host "→ dist/ opruimen..." -ForegroundColor Yellow
-if (Test-Path $distDir) { Remove-Item $distDir -Recurse -Force }
-New-Item -ItemType Directory -Path $distDir | Out-Null
+if (Test-Path $distDir) {
+    try {
+        Remove-Item $distDir -Recurse -Force -ErrorAction Stop
+    } catch {
+        # Map wordt vastgehouden (Verkenner, terminal, ...) — bouw in een nieuwe map
+        $distDir = Join-Path $repoRoot ("dist-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        Write-Host "  ⚠ dist\ is in gebruik door een ander proces — bouw in $distDir" -ForegroundColor DarkYellow
+    }
+}
+New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
 # ── Stap 2: publish Windows x64 ───────────────────────────────────────────────
 Write-Host "→ Publish Windows x64..." -ForegroundColor Yellow

@@ -26,3 +26,5 @@ arch/
 ham/
 *.jpg
 *.exe
+dist/
+dist-*/
