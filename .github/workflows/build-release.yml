@@ -12,8 +12,8 @@ on:
   workflow_dispatch:        # handmatig starten via tabblad Actions
 
 env:
-  VERSION: v0.9
-  DOTNET_VERSION: "10.0.1xx"   # 10.0.4xx/11.0 faalden op NuGet restore (MSB4181)
+  RELEASE_TAG: v0.9   # niet VERSION noemen: MSBuild leest die als $(Version)
+  DOTNET_VERSION: "10.0.x"
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
@@ -62,12 +62,12 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path out/RadioBridge/radiobridge_audio.dll)) { throw "radiobridge_audio.dll ontbreekt in output" }
-          Compress-Archive -Path out/RadioBridge -DestinationPath "RadioBridge-$env:VERSION-win-x64.zip"
+          Compress-Archive -Path out/RadioBridge -DestinationPath "RadioBridge-$env:RELEASE_TAG-win-x64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: win-x64
-          path: RadioBridge-${{ env.VERSION }}-win-x64.zip
+          path: RadioBridge-${{ env.RELEASE_TAG }}-win-x64.zip
 
   linux:
     runs-on: ubuntu-latest
@@ -93,12 +93,12 @@ jobs:
         run: |
           test -f out/RadioBridge/radiobridge_audio.so || { echo "radiobridge_audio.so ontbreekt"; exit 1; }
           chmod +x out/RadioBridge/RadioBridge
-          cd out && zip -qr "../RadioBridge-${VERSION}-linux-x64.zip" RadioBridge
+          cd out && zip -qr "../RadioBridge-${RELEASE_TAG}-linux-x64.zip" RadioBridge
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64
-          path: RadioBridge-${{ env.VERSION }}-linux-x64.zip
+          path: RadioBridge-${{ env.RELEASE_TAG }}-linux-x64.zip
 
   release:
     needs: [windows, linux]
@@ -108,13 +108,13 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Uploaden naar release ${{ env.VERSION }}
+      - name: Uploaden naar release ${{ env.RELEASE_TAG }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $VERSION" --notes "RadioBridge $VERSION"
-          gh release upload "$VERSION" --repo "$GITHUB_REPOSITORY" --clobber \
-            "RadioBridge-${VERSION}-win-x64.zip" \
-            "RadioBridge-${VERSION}-linux-x64.zip"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $VERSION" --notes "RadioBridge $VERSION"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "RadioBridge-${RELEASE_TAG}-win-x64.zip" \
+            "RadioBridge-${RELEASE_TAG}-linux-x64.zip"
           echo "Build ${GITHUB_SHA::7} geüpload naar $VERSION" >> "$GITHUB_STEP_SUMMARY"
