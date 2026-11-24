@@ -16,9 +16,6 @@ env:
   DOTNET_VERSION: "10.0.x"
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
-  # NuGet faalt op de runners ("Failed to load prune package data") door de
-  # mix van SDK-versies; pruning is alleen een optimalisatie.
-  RestoreEnablePackagePruning: false
 
 permissions:
   contents: write           # nodig om release-assets te uploaden
@@ -33,13 +30,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Eigen installatiemap: niet mengen met de voorgeïnstalleerde .NET 11
+      # (daarop faalde NuGet restore met "Failed to load prune package data").
       - uses: actions/setup-dotnet@v4
         id: dotnet
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
       - name: SDK vastzetten
-        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --version
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --info | head -20
 
       # miniaudio shim → native/win-x64/radiobridge_audio.dll
       - uses: ilammy/msvc-dev-cmd@v1
@@ -73,13 +74,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Eigen installatiemap: niet mengen met de voorgeïnstalleerde .NET 11
+      # (daarop faalde NuGet restore met "Failed to load prune package data").
       - uses: actions/setup-dotnet@v4
         id: dotnet
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
       - name: SDK vastzetten
-        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --version
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --info | head -20
 
       - name: Publish linux-x64
         run: dotnet publish RadioBridge -r linux-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
