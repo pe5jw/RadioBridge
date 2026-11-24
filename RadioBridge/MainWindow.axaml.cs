@@ -597,31 +597,36 @@ public partial class MainWindow : Window
 
     // ── VU meter ─────────────────────────────────────────────────────────────
 
+    // Vaste kleuren: niet bij elke update nieuwe brush-objecten maken
+    private static readonly IBrush VuGreen  = new SolidColorBrush(Color.Parse("#4caf50"));
+    private static readonly IBrush VuYellow = new SolidColorBrush(Color.Parse("#ffc107"));
+    private static readonly IBrush VuRed    = new SolidColorBrush(Color.Parse("#f44336"));
+    private int _vuUpdatePending;
+    private float _vuCap, _vuPb;
+
     private void OnLevelChanged(float capLevel, float pbLevel)
     {
+        _vuCap = capLevel; _vuPb = pbLevel;
+        // Max één openstaande UI-update; tussenliggende waarden worden overgeslagen
+        if (Interlocked.Exchange(ref _vuUpdatePending, 1) == 1) return;
         Dispatcher.UIThread.Post(() =>
         {
-            // Logaritmische weergave: dB = 20*log10(level), range -60..0 → 0..1
-            static double ToBar(float lvl)
-            {
-                if (lvl <= 0.001f) return 0.0;
-                double db = 20.0 * Math.Log10(lvl);  // -60..0
-                return Math.Max(0.0, (db + 60.0) / 60.0);
-            }
+            Interlocked.Exchange(ref _vuUpdatePending, 0);
+            SetVu(_vuCapBar, _vuCap);
+            SetVu(_vuPbBar,  _vuPb);
+        }, DispatcherPriority.Background);
+    }
 
-            _vuCapBar.Width = ToBar(capLevel) * VuMaxWidth;
-            _vuPbBar.Width  = ToBar(pbLevel)  * VuMaxWidth;
+    private static void SetVu(Border bar, float lvl)
+    {
+        // Logaritmische weergave: -60..0 dB → 0..1
+        double frac = lvl <= 0.001f ? 0.0 : Math.Max(0.0, (20.0 * Math.Log10(lvl) + 60.0) / 60.0);
+        double w = Math.Round(frac * VuMaxWidth);
+        if (Math.Abs(bar.Width - w) >= 2) bar.Width = w;   // kleine wijzigingen niet hertekenen
 
-            // Kleur: groen < -12dB, geel -12..-3dB, rood > -3dB
-            static IBrush LevelColor(float lvl)
-            {
-                if (lvl > 0.71f) return new SolidColorBrush(Color.Parse("#f44336")); // rood  > -3dB
-                if (lvl > 0.25f) return new SolidColorBrush(Color.Parse("#ffc107")); // geel  > -12dB
-                return new SolidColorBrush(Color.Parse("#4caf50"));                  // groen
-            }
-            _vuCapBar.Background = LevelColor(capLevel);
-            _vuPbBar.Background  = LevelColor(pbLevel);
-        });
+        // groen < -12dB, geel -12..-3dB, rood > -3dB
+        var brush = lvl > 0.71f ? VuRed : lvl > 0.25f ? VuYellow : VuGreen;
+        if (!ReferenceEquals(bar.Background, brush)) bar.Background = brush;
     }
 
     // ── Testtoon ──────────────────────────────────────────────────────────────

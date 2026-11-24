@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -137,9 +138,18 @@ public class AudioEngine : IDisposable
     private MiniAudioEngine.CaptureCallback?  _captureDelegate;
     private MiniAudioEngine.PlaybackCallback? _playbackDelegate;
 
-    // Playback ring-buffer (lock-free SPSC approximation via byte queue)
+    // Playback FIFO: ontvangen PCM-blokken; _playHeadOffset = al afgespeeld deel van het eerste blok.
+    // De audiokaart vraagt niet altijd precies één blok per callback, dus we vullen byte-exact.
     private readonly object _playLock  = new();
     private readonly Queue<byte[]> _playQueue = new();
+    private int _playHeadOffset;
+
+    // Herbruikbare buffers (geen allocaties per audioblok → minder GC-werk)
+    private short[] _capPcm  = Array.Empty<short>();
+    private byte[]  _capSend = Array.Empty<byte>();     // [4-byte lengte | PCM] in één keer verzenden
+    private short[] _pbPcm   = Array.Empty<short>();
+    private byte[]  _pbBytes = Array.Empty<byte>();
+    private static readonly byte[] Silence = new byte[65536];
     // Max queue: 3 frames à 20ms = 60ms buffer — daarboven droppen om latency te beperken
     private int _maxPlayQueueBytes = 1; // wordt ingesteld in StartAudio op 3 × frameBytes
     private int _playQueueBytes;
@@ -156,7 +166,7 @@ public class AudioEngine : IDisposable
 
     // Level events zijn gethrottled: max 20× per seconde (elke 50 ms)
     private long _lastLevelTick = 0;
-    private const long LevelIntervalTicks = 10_000_000 / 20; // 50 ms in ticks
+    private const long LevelIntervalTicks = 10_000_000 / 10; // 100 ms: 10 VU-updates/s is ruim genoeg
 
     // ── Events ────────────────────────────────────────────────────────────────
     public event Action<string>?       StatusChanged;
@@ -473,37 +483,56 @@ public class AudioEngine : IDisposable
         {
             int samples = frames * _preset.Channels;
             int byteLen = samples * 2; // 16-bit = 2 bytes per sample
-            var pcm = new short[samples];
+
+            if (_capPcm.Length != samples)  _capPcm  = new short[samples];
+            if (_capSend.Length != byteLen + 4) _capSend = new byte[byteLen + 4];
+            var pcm = _capPcm;
             Marshal.Copy(buffer, pcm, 0, samples);
 
-            // Convert to byte[] for existing filter / codec APIs
-            var bytes = new byte[byteLen];
-            Buffer.BlockCopy(pcm, 0, bytes, 0, byteLen);
+            // PCM komt vanaf offset 4 in de verzendbuffer (ervoor komt de lengte)
+            var bytes = _capSend;
 
-            // Testtoon injecteren vóór filter en codec
-            _tone.Mix(bytes, byteLen);
+            // Testtoon injecteren vóór gain, filter en codec
+            if (_tone.Enabled)
+            {
+                var tmp = new byte[byteLen];
+                Buffer.BlockCopy(pcm, 0, tmp, 0, byteLen);
+                _tone.Mix(tmp, byteLen);
+                Buffer.BlockCopy(tmp, 0, pcm, 0, byteLen);
+            }
 
             // Capture gain toepassen + VU meten
             ApplyGainAndMeasure(pcm, samples, CaptureGain, ref _captureLevel, isCap: true);
-            Buffer.BlockCopy(pcm, 0, bytes, 0, byteLen);
 
-            if (_filter.IsEnabled)
-                _filter.Process(bytes, byteLen, _preset.Channels);
-
-            if (_codec.IsEnabled)
+            if (_filter.IsEnabled || _codec.IsEnabled)
             {
-                var packets = _codec.Encode(bytes, byteLen);
-                foreach (var packet in packets)
+                // Filter en codec werken op een byte[] vanaf 0
+                var work = new byte[byteLen];
+                Buffer.BlockCopy(pcm, 0, work, 0, byteLen);
+                if (_filter.IsEnabled)
+                    _filter.Process(work, byteLen, _preset.Channels);
+
+                if (_codec.IsEnabled)
                 {
-                    _stream.Write(BitConverter.GetBytes((ushort)packet.Length), 0, 2);
-                    _stream.Write(packet, 0, packet.Length);
+                    foreach (var packet in _codec.Encode(work, byteLen))
+                    {
+                        var msg = new byte[packet.Length + 2];
+                        BinaryPrimitives.WriteUInt16LittleEndian(msg, (ushort)packet.Length);
+                        Buffer.BlockCopy(packet, 0, msg, 2, packet.Length);
+                        _stream.Write(msg, 0, msg.Length);
+                    }
+                    return;
                 }
+                Buffer.BlockCopy(work, 0, bytes, 4, byteLen);
             }
             else
             {
-                _stream.Write(BitConverter.GetBytes(byteLen), 0, 4);
-                _stream.Write(bytes, 0, byteLen);
+                Buffer.BlockCopy(pcm, 0, bytes, 4, byteLen);
             }
+
+            // Lengte + PCM in één write → één TCP-pakket i.p.v. twee
+            BinaryPrimitives.WriteInt32LittleEndian(bytes, byteLen);
+            _stream.Write(bytes, 0, byteLen + 4);
         }
         catch (ObjectDisposedException) { _running = false; }
         catch (System.IO.IOException)   { _running = false; }
@@ -514,33 +543,43 @@ public class AudioEngine : IDisposable
 
     private void OnPlayback(IntPtr buffer, int frames)
     {
-        int samples  = frames * _preset.Channels;
-        int byteLen  = samples * 2;
+        int samples = frames * _preset.Channels;
+        int byteLen = samples * 2;
+        if (_pbBytes.Length != byteLen) { _pbBytes = new byte[byteLen]; _pbPcm = new short[samples]; }
 
-        byte[]? chunk = null;
+        // Vul byte-exact uit de FIFO, eventueel over meerdere ontvangen blokken heen
+        int filled = 0;
         lock (_playLock)
         {
-            if (_playQueue.Count > 0)
+            while (filled < byteLen && _playQueue.Count > 0)
             {
-                chunk = _playQueue.Dequeue();
-                _playQueueBytes -= chunk.Length;
+                var head = _playQueue.Peek();
+                int n = Math.Min(head.Length - _playHeadOffset, byteLen - filled);
+                Buffer.BlockCopy(head, _playHeadOffset, _pbBytes, filled, n);
+                filled          += n;
+                _playHeadOffset += n;
+                _playQueueBytes -= n;
+                if (_playHeadOffset >= head.Length) { _playQueue.Dequeue(); _playHeadOffset = 0; }
             }
         }
 
-        if (chunk != null && chunk.Length == byteLen)
+        if (filled == 0)
         {
-            var pcm = new short[samples];
-            Buffer.BlockCopy(chunk, 0, pcm, 0, byteLen);
-            ApplyGainAndMeasure(pcm, samples, PlaybackGain, ref _playbackLevel, isCap: false);
-            Marshal.Copy(pcm, 0, buffer, samples);
-        }
-        else
-        {
-            // Silence
             _playbackLevel = 0f;
-            for (int i = 0; i < byteLen; i++)
-                Marshal.WriteByte(buffer + i, 0);
+            WriteSilence(buffer, byteLen);
+            return;
         }
+
+        if (filled < byteLen) Array.Clear(_pbBytes, filled, byteLen - filled);  // tekort → stilte aanvullen
+        Buffer.BlockCopy(_pbBytes, 0, _pbPcm, 0, byteLen);
+        ApplyGainAndMeasure(_pbPcm, samples, PlaybackGain, ref _playbackLevel, isCap: false);
+        Marshal.Copy(_pbPcm, 0, buffer, samples);
+    }
+
+    private static void WriteSilence(IntPtr buffer, int byteLen)
+    {
+        for (int off = 0; off < byteLen; off += Silence.Length)
+            Marshal.Copy(Silence, 0, buffer + off, Math.Min(Silence.Length, byteLen - off));
     }
 
     // ── Gain + VU meting ─────────────────────────────────────────────────────
@@ -670,7 +709,8 @@ public class AudioEngine : IDisposable
             while (_playQueueBytes + data.Length > _maxPlayQueueBytes && _playQueue.Count > 0)
             {
                 var old = _playQueue.Dequeue();
-                _playQueueBytes -= old.Length;
+                _playQueueBytes -= old.Length - _playHeadOffset;
+                _playHeadOffset  = 0;
             }
             _playQueue.Enqueue(data);
             _playQueueBytes += data.Length;
