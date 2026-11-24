@@ -30,7 +30,7 @@ public sealed class SerialBridge : IDisposable
     private CancellationTokenSource? _sessionCts;
 
     /// <summary>Log elk pakket als hex. Handig bij debuggen, uitzetten als alles werkt.</summary>
-    public bool TraceBytes { get; set; } = true;
+    public bool TraceBytes { get; set; } = false;
 
     public event Action<string>? StatusChanged;
     public event Action<string>? Error;

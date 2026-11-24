@@ -36,7 +36,7 @@ public sealed class VirtualSerialBridge : IDisposable
     public VirtualSerialBridge(string name = "Poort") => _name = name;
 
     /// <summary>Log elk pakket als hex. Handig bij debuggen.</summary>
-    public bool TraceBytes { get; set; } = true;
+    public bool TraceBytes { get; set; } = false;
 
     // ── State ─────────────────────────────────────────────────────────────────
     private readonly CancellationTokenSource _cts = new();

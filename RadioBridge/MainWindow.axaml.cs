@@ -440,25 +440,30 @@ public partial class MainWindow : Window
         });
     }
 
+    // Logregels worden verzameld en hooguit 10x per seconde naar de UI geschreven,
+    // zodat veel logverkeer (bijv. CAT-polling) de UI-thread niet kan blokkeren.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _logQueue = new();
+    private int _logFlushPending;
+
     private void AppendLog(string msg)
     {
-        Dispatcher.UIThread.Post(() =>
-        {
-            var ts = DateTime.Now.ToString("HH:mm:ss");
-            if (_logLineCount >= MaxLogLines)
-            {
-                var text = _tblLog.Text ?? "";
-                int nl = 0, pos = 0;
-                while (pos < text.Length && nl < 50) { if (text[pos++] == '\n') nl++; }
-                _logBuf.Clear();
-                _logBuf.Append(text[pos..]);
-                _logLineCount -= nl;
-            }
-            _logBuf.AppendLine($"[{ts}]  {msg}");
-            _logLineCount++;
-            _tblLog.Text = _logBuf.ToString();
-            _logScroller.ScrollToEnd();
-        });
+        _logQueue.Enqueue($"[{DateTime.Now:HH:mm:ss}]  {msg}");
+        if (Interlocked.Exchange(ref _logFlushPending, 1) == 1) return;
+        // AppendLog kan vanaf elke thread komen; flush altijd op de UI-thread
+        Dispatcher.UIThread.Post(async () => { await Task.Delay(100); FlushLog(); });
+    }
+
+    private void FlushLog()
+    {
+        Interlocked.Exchange(ref _logFlushPending, 0);
+        var lines = new List<string>(_logBuf.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        while (_logQueue.TryDequeue(out var line)) lines.Add(line);
+        if (lines.Count > MaxLogLines) lines.RemoveRange(0, lines.Count - MaxLogLines);
+        _logBuf.Clear();
+        foreach (var l in lines) _logBuf.Append(l.TrimEnd('\r')).Append('\n');
+        _logLineCount = lines.Count;
+        _tblLog.Text = _logBuf.ToString();
+        _logScroller.ScrollToEnd();
     }
 
     // ── Handlers ─────────────────────────────────────────────────────────────
