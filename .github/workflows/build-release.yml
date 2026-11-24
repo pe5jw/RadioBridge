@@ -13,7 +13,7 @@ on:
 
 env:
   VERSION: v0.9
-  DOTNET_VERSION: "10.0.x"
+  DOTNET_VERSION: "10.0.1xx"   # 10.0.4xx/11.0 faalden op NuGet restore (MSB4181)
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
