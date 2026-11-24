@@ -31,8 +31,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
+        id: dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+      # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
+      - name: SDK vastzetten
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --version
 
       # miniaudio shim → native/win-x64/radiobridge_audio.dll
       - uses: ilammy/msvc-dev-cmd@v1
@@ -67,8 +71,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
+        id: dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+      # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
+      - name: SDK vastzetten
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --version
 
       - name: Publish linux-x64
         run: dotnet publish RadioBridge -r linux-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
