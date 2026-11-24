@@ -21,9 +21,9 @@ public partial class MainWindow : Window
     private readonly ComboBox      _cbPlayback  = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     // Volume sliders
-    private readonly Slider    _sldCapVol  = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly Slider    _sldCapVol  = new() { Minimum = 0, Maximum = 200, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
     private readonly TextBlock _tblCapVol  = new() { Text = "100%", Width = 36, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
-    private readonly Slider    _sldPbVol   = new() { Minimum = 0, Maximum = 400, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
+    private readonly Slider    _sldPbVol   = new() { Minimum = 0, Maximum = 200, Value = 100, Width = 120, TickFrequency = 10, IsSnapToTickEnabled = false };
     private readonly TextBlock _tblPbVol   = new() { Text = "100%", Width = 36, Foreground = new SolidColorBrush(Color.Parse("#dcdcdc")), VerticalAlignment = VerticalAlignment.Center };
 
     // VU meters
@@ -44,7 +44,7 @@ public partial class MainWindow : Window
     private readonly TextBlock     _tblLog      = new() { Foreground = new SolidColorBrush(Color.Parse("#aaa")), FontFamily = new FontFamily("Consolas,monospace"), FontSize = 11, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6) };
     private readonly TextBlock     _tblStatus   = new() { Text = "Gestopt", Foreground = new SolidColorBrush(Color.Parse("#6fbf6f")) };
     private readonly Border        _pnlStatus   = new() { Background = new SolidColorBrush(Color.Parse("#1a3a1a")), BorderBrush = new SolidColorBrush(Color.Parse("#2a6a2a")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8,6) };
-    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, Height = 400 };
+    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, Height = 230 };   // ~16 regels
 
     // Serial port 1
     private readonly CheckBox      _chkPort1     = new() { Content = "Inschakelen" };
@@ -85,8 +85,12 @@ public partial class MainWindow : Window
 
     private readonly StringBuilder _logBuf = new();
     private int _logLineCount;
-    private const int MaxLogLines = 200;   // FIFO: oudste regels vallen eraf
-    private const double LogTopOffset = 190;  // ruimte boven het log (knoppen, status, marges)
+    private const int MaxLogLines = 100;   // FIFO: oudste regels vallen eraf
+
+    // Laatste instellingen (JSON), zie AppSettings
+    private AppSettings _settings = new();
+    private bool _loadingSettings;
+    private int  _savePending;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -106,7 +110,10 @@ public partial class MainWindow : Window
         PopulateDevices();
         PopulatePresets();
         PopulateSerialPorts();
+        if (OperatingSystem.IsWindows()) OnDetectCom0Com(null, null);   // com0com-lijst vooraf vullen zodat opgeslagen keuze terugkomt
+        LoadSettings();
         UpdateUI();
+        HookSettingsSave();
     }
 
     // ── Build UI ──────────────────────────────────────────────────────────────
@@ -146,6 +153,12 @@ public partial class MainWindow : Window
         _btnConnect.Click     += OnConnectClick;
         _btnRefresh.Click     += (s, e) => { PopulateDevices(); PopulateSerialPorts(); AppendLog("Apparatenlijst vernieuwd."); };
         _btnFirewall.Click    += OnFirewallClick;
+
+        // Muiswiel stelt sliders in (Shift = grotere stappen)
+        EnableMouseWheel(_sldCapVol,   1);
+        EnableMouseWheel(_sldPbVol,    1);
+        EnableMouseWheel(_sldToneFreq, 100);
+        EnableMouseWheel(_sldToneVol,  5);
 
         // ── Bouwen linkerkolom (audio) ────────────────────────────────────────
 
@@ -269,9 +282,6 @@ public partial class MainWindow : Window
 
         _pnlStatus.Child = _tblStatus;
         _logScroller.Content = _tblLog;
-        // Log krijgt een begrensde hoogte die meeschaalt met het venster, zodat hij
-        // binnen zijn vak scrolt i.p.v. de pagina eindeloos naar beneden te laten groeien.
-        SizeChanged += (_, e) => _logScroller.Height = Math.Max(200, e.NewSize.Height - LogTopOffset);
 
         var monitorCol = new StackPanel { Spacing = 6 };
         monitorCol.Children.Add(new StackPanel
@@ -635,7 +645,7 @@ public partial class MainWindow : Window
     // ── Virtuele COM (com0com / PTY) ──────────────────────────────────────────
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416")]
-    private void OnDetectCom0Com(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnDetectCom0Com(object? sender, Avalonia.Interactivity.RoutedEventArgs? e)
     {
         bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows);
@@ -723,7 +733,136 @@ public partial class MainWindow : Window
         UpdateUI(); SetStatus("Gestopt"); AppendLog("Verbinding beëindigd.");
     }
 
-    protected override void OnClosing(WindowClosingEventArgs e) { StopAll(); base.OnClosing(e); }
+    protected override void OnClosing(WindowClosingEventArgs e) { SaveSettings(); StopAll(); base.OnClosing(e); }
+
+    // ── Muiswiel op sliders ───────────────────────────────────────────────────
+
+    private static void EnableMouseWheel(Slider slider, double step)
+    {
+        slider.PointerWheelChanged += (_, e) =>
+        {
+            if (!slider.IsEnabled) return;
+            double s = (e.KeyModifiers & Avalonia.Input.KeyModifiers.Shift) != 0 ? step * 10 : step;
+            double v = slider.Value + Math.Sign(e.Delta.Y) * s;
+            slider.Value = Math.Clamp(v, slider.Minimum, slider.Maximum);
+            e.Handled = true;   // niet ook de pagina laten scrollen
+        };
+    }
+
+    // ── Instellingen bewaren / herstellen ────────────────────────────────────
+
+    private void LoadSettings()
+    {
+        _loadingSettings = true;
+        try
+        {
+            var st = _settings = AppSettings.Load();
+
+            _rbServer.IsChecked = st.IsServer;
+            _rbClient.IsChecked = !st.IsServer;
+            _txtHost.Text       = st.Host;
+            _nudPort.Value      = st.Port;
+
+            SelectByText(_cbCapture,  st.CaptureDevice);
+            SelectByText(_cbPlayback, st.PlaybackDevice);
+            SelectByText(_cbPreset,   st.Preset);
+            _sldCapVol.Value    = Math.Clamp(st.CaptureVolume,  _sldCapVol.Minimum, _sldCapVol.Maximum);
+            _sldPbVol.Value     = Math.Clamp(st.PlaybackVolume, _sldPbVol.Minimum,  _sldPbVol.Maximum);
+            _chkNoise.IsChecked = st.NoiseFilter;
+
+            _chkPort1.IsChecked = st.Serial1.Enabled;
+            SelectByText(_cbPort1Com, st.Serial1.ComPort);
+            _nudPort1Baud.Value = st.Serial1.Baud;
+            _nudPort1Tcp.Value  = st.Serial1.TcpPort;
+
+            _chkPort2.IsChecked = st.Serial2.Enabled;
+            SelectByText(_cbPort2Com, st.Serial2.ComPort);
+            _nudPort2Baud.Value = st.Serial2.Baud;
+            _nudPort2Tcp.Value  = st.Serial2.TcpPort;
+
+            SelectVCom(_cbVCom1, st.VirtualCom1);
+            SelectVCom(_cbVCom2, st.VirtualCom2);
+
+            _sldToneFreq.Value = Math.Clamp(st.ToneFrequency, _sldToneFreq.Minimum, _sldToneFreq.Maximum);
+            _sldToneVol.Value  = Math.Clamp(st.ToneVolume,    _sldToneVol.Minimum,  _sldToneVol.Maximum);
+        }
+        finally { _loadingSettings = false; }
+    }
+
+    private void SaveSettings()
+    {
+        if (_loadingSettings) return;
+        var st = _settings;
+        st.IsServer       = _rbServer.IsChecked == true;
+        st.Host           = _txtHost.Text ?? "";
+        st.Port           = (int)(_nudPort.Value ?? 5000);
+        st.CaptureDevice  = _cbCapture.SelectedItem?.ToString()  ?? st.CaptureDevice;
+        st.PlaybackDevice = _cbPlayback.SelectedItem?.ToString() ?? st.PlaybackDevice;
+        st.Preset         = _cbPreset.SelectedItem?.ToString()   ?? st.Preset;
+        st.CaptureVolume  = _sldCapVol.Value;
+        st.PlaybackVolume = _sldPbVol.Value;
+        st.NoiseFilter    = _chkNoise.IsChecked == true;
+
+        st.Serial1.Enabled = _chkPort1.IsChecked == true;
+        st.Serial1.ComPort = _cbPort1Com.SelectedItem?.ToString() ?? st.Serial1.ComPort;
+        st.Serial1.Baud    = (int)(_nudPort1Baud.Value ?? 9600);
+        st.Serial1.TcpPort = (int)(_nudPort1Tcp.Value  ?? 5001);
+        st.Serial2.Enabled = _chkPort2.IsChecked == true;
+        st.Serial2.ComPort = _cbPort2Com.SelectedItem?.ToString() ?? st.Serial2.ComPort;
+        st.Serial2.Baud    = (int)(_nudPort2Baud.Value ?? 9600);
+        st.Serial2.TcpPort = (int)(_nudPort2Tcp.Value  ?? 5002);
+
+        // com0com keuzes alleen bijwerken als de lijst gevuld is (anders verlies je ze op Linux)
+        if (_cbVCom1.SelectedItem is VComItem v1) st.VirtualCom1 = v1.Port;
+        if (_cbVCom2.SelectedItem is VComItem v2) st.VirtualCom2 = v2.Port;
+
+        st.ToneFrequency = _sldToneFreq.Value;
+        st.ToneVolume    = _sldToneVol.Value;
+        st.Save();
+    }
+
+    /// <summary>Opslaan 1 s na de laatste wijziging, zodat slepen met een slider niet honderd keer schrijft.</summary>
+    private void SaveSettingsSoon()
+    {
+        if (_loadingSettings) return;
+        if (Interlocked.Exchange(ref _savePending, 1) == 1) return;
+        Dispatcher.UIThread.Post(async () =>
+        {
+            await Task.Delay(1000);
+            Interlocked.Exchange(ref _savePending, 0);
+            SaveSettings();
+        });
+    }
+
+    private void HookSettingsSave()
+    {
+        void Changed(object? s, EventArgs e) => SaveSettingsSoon();
+
+        _rbServer.IsCheckedChanged += Changed;
+        _chkNoise.IsCheckedChanged += Changed;
+        _chkPort1.IsCheckedChanged += Changed;
+        _chkPort2.IsCheckedChanged += Changed;
+        _txtHost.TextChanged       += Changed;
+        foreach (var cb in new[] { _cbCapture, _cbPlayback, _cbPreset, _cbPort1Com, _cbPort2Com, _cbVCom1, _cbVCom2 })
+            cb.SelectionChanged += Changed;
+        foreach (var nud in new[] { _nudPort, _nudPort1Baud, _nudPort1Tcp, _nudPort2Baud, _nudPort2Tcp })
+            nud.ValueChanged += Changed;
+        foreach (var sld in new[] { _sldCapVol, _sldPbVol, _sldToneFreq, _sldToneVol })
+            sld.ValueChanged += Changed;
+    }
+
+    private static void SelectByText(ComboBox cb, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        foreach (var item in cb.Items)
+            if (item?.ToString() == text) { cb.SelectedItem = item; return; }
+    }
+
+    private static void SelectVCom(ComboBox cb, string port)
+    {
+        foreach (var item in cb.Items)
+            if (item is VComItem v && v.Port == port) { cb.SelectedItem = item; return; }
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
