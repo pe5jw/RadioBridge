@@ -44,7 +44,7 @@ public partial class MainWindow : Window
     private readonly TextBlock     _tblLog      = new() { Foreground = new SolidColorBrush(Color.Parse("#aaa")), FontFamily = new FontFamily("Consolas,monospace"), FontSize = 11, TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6) };
     private readonly TextBlock     _tblStatus   = new() { Text = "Gestopt", Foreground = new SolidColorBrush(Color.Parse("#6fbf6f")) };
     private readonly Border        _pnlStatus   = new() { Background = new SolidColorBrush(Color.Parse("#1a3a1a")), BorderBrush = new SolidColorBrush(Color.Parse("#2a6a2a")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8,6) };
-    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, MinHeight = 300 };
+    private readonly ScrollViewer  _logScroller = new() { HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled, Height = 400 };
 
     // Serial port 1
     private readonly CheckBox      _chkPort1     = new() { Content = "Inschakelen" };
@@ -85,7 +85,8 @@ public partial class MainWindow : Window
 
     private readonly StringBuilder _logBuf = new();
     private int _logLineCount;
-    private const int MaxLogLines = 300;
+    private const int MaxLogLines = 200;   // FIFO: oudste regels vallen eraf
+    private const double LogTopOffset = 190;  // ruimte boven het log (knoppen, status, marges)
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -268,7 +269,9 @@ public partial class MainWindow : Window
 
         _pnlStatus.Child = _tblStatus;
         _logScroller.Content = _tblLog;
-        _logScroller.Height = double.NaN; // vrije hoogte in derde kolom
+        // Log krijgt een begrensde hoogte die meeschaalt met het venster, zodat hij
+        // binnen zijn vak scrolt i.p.v. de pagina eindeloos naar beneden te laten groeien.
+        SizeChanged += (_, e) => _logScroller.Height = Math.Max(200, e.NewSize.Height - LogTopOffset);
 
         var monitorCol = new StackPanel { Spacing = 6 };
         monitorCol.Children.Add(new StackPanel
