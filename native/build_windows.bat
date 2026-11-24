@@ -1,12 +1,12 @@
 @echo off
 REM Build radiobridge_audio.dll for Windows x64
 REM Run this from a "x64 Native Tools Command Prompt for VS" or Developer Command Prompt
-REM Output: ..\native\win-x64\radiobridge_audio.dll
+REM Output: native\win-x64\radiobridge_audio.dll
 
 setlocal
 
 set SRCDIR=%~dp0
-set OUTDIR=%SRCDIR%..\RadioBridge\native\win-x64
+set OUTDIR=%SRCDIR%win-x64
 
 REM Ensure output dir exists
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"

@@ -1,0 +1,104 @@
+name: Build & release
+
+# Bouwt RadioBridge voor Windows x64 en Linux x64 en zet de zips in de
+# GitHub release (zelfde bestanden als build-release.ps1 lokaal maakte).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "RadioBridge/**"
+      - "native/**"
+      - ".github/workflows/build-release.yml"
+  workflow_dispatch:        # handmatig starten via tabblad Actions
+
+env:
+  VERSION: v0.9
+  DOTNET_VERSION: "10.0.x"
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+permissions:
+  contents: write           # nodig om release-assets te uploaden
+
+concurrency:
+  group: release
+  cancel-in-progress: true  # nieuwe push → vorige build afbreken
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # miniaudio shim → native/win-x64/radiobridge_audio.dll
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Native audio DLL bouwen (MSVC)
+        shell: cmd
+        run: |
+          if not exist native\win-x64 mkdir native\win-x64
+          cl.exe /nologo /O2 /LD /Inative native\radiobridge_audio.c /Fe:native\win-x64\radiobridge_audio.dll /Fo:native\win-x64\
+          if errorlevel 1 exit /b 1
+          del native\win-x64\*.obj native\win-x64\*.lib native\win-x64\*.exp 2>nul
+          dir native\win-x64
+
+      - name: Publish win-x64
+        run: dotnet publish RadioBridge -r win-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
+
+      - name: Zippen
+        shell: pwsh
+        run: |
+          if (-not (Test-Path out/RadioBridge/radiobridge_audio.dll)) { throw "radiobridge_audio.dll ontbreekt in output" }
+          Compress-Archive -Path out/RadioBridge -DestinationPath "RadioBridge-$env:VERSION-win-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: RadioBridge-${{ env.VERSION }}-win-x64.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publish linux-x64
+        run: dotnet publish RadioBridge -r linux-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
+
+      - name: Zippen (met execute-bits)
+        run: |
+          test -f out/RadioBridge/radiobridge_audio.so || { echo "radiobridge_audio.so ontbreekt"; exit 1; }
+          chmod +x out/RadioBridge/RadioBridge
+          cd out && zip -qr "../RadioBridge-${VERSION}-linux-x64.zip" RadioBridge
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: RadioBridge-${{ env.VERSION }}-linux-x64.zip
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Uploaden naar release ${{ env.VERSION }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $VERSION" --notes "RadioBridge $VERSION"
+          gh release upload "$VERSION" --repo "$GITHUB_REPOSITORY" --clobber \
+            "RadioBridge-${VERSION}-win-x64.zip" \
+            "RadioBridge-${VERSION}-linux-x64.zip"
+          echo "Build ${GITHUB_SHA::7} geüpload naar $VERSION" >> "$GITHUB_STEP_SUMMARY"
