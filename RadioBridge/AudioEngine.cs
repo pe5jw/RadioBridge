@@ -181,6 +181,11 @@ public class AudioEngine : IDisposable
 
     private void Log(string msg) => StatusChanged?.Invoke(msg);
 
+    /// <summary>Audio loopt (verbinding opgezet en audio gestart).</summary>
+    public bool IsRunning => _running;
+    /// <summary>Er is ooit een TCP-verbinding met de tegenpartij geweest.</summary>
+    public bool WasConnected { get; private set; }
+
     // ── Server ────────────────────────────────────────────────────────────────
 
     public async Task StartServerAsync(int port, int captureIdx, int playbackIdx)
@@ -196,6 +201,7 @@ public class AudioEngine : IDisposable
             _tcpClient.NoDelay = true;
             _stream = _tcpClient.GetStream();
             _disconnectFired = false;
+            WasConnected = true;
             Log($"Verbinding van {_tcpClient.Client.RemoteEndPoint}");
 
             var cfg = await ReceiveConfigAsync(_cts.Token);
@@ -234,6 +240,7 @@ public class AudioEngine : IDisposable
             _tcpClient = new TcpClient { NoDelay = true };
             await _tcpClient.ConnectAsync(host, port, _cts.Token);
             _stream = _tcpClient.GetStream();
+            WasConnected = true;
             Log($"Verbonden met {host}:{port}");
 
             var cfg = new BridgeConfig

@@ -241,6 +241,52 @@ cp ../native/linux-arm64/radiobridge_audio.so ~/radiobridge/
 
 ---
 
+### Opstartparameters
+
+| Parameter | Werking |
+|-----------|---------|
+| `--startserver` | Start direct als server met de laatst opgeslagen instellingen |
+| `--startclient` | Start direct als client met de laatst opgeslagen instellingen |
+| `--headless` | Zonder venster, alleen samen met `--startserver` of `--startclient`. Logt naar de console. |
+| `--help` | Uitleg |
+
+Instellingen worden automatisch bewaard zodra je ze in het venster wijzigt:
+
+- Windows: `%APPDATA%\RadioBridge\settings.json`
+- Linux: `~/.config/RadioBridge/settings.json`
+
+Stel dus eerst alles één keer in met het venster; daarna kan RadioBridge zonder venster draaien.
+Een server zonder venster herstart zichzelf na het verbreken van een client; een client zonder
+venster probeert elke 5 seconden opnieuw te verbinden.
+
+#### Linux: server automatisch starten bij het opstarten (systemd)
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/radiobridge.service <<'UNIT'
+[Unit]
+Description=RadioBridge server
+After=network-online.target sound.target
+
+[Service]
+ExecStart=%h/RadioBridge/RadioBridge --startserver --headless
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+
+systemctl --user daemon-reload
+systemctl --user enable --now radiobridge
+loginctl enable-linger $USER          # ook starten zonder dat je inlogt
+journalctl --user -u radiobridge -f   # log bekijken
+```
+
+Als gebruikersdienst draait RadioBridge met jouw audio-sessie (PulseAudio/PipeWire) en je
+`dialout`-rechten voor de seriële poort. Stop de dienst (`systemctl --user stop radiobridge`)
+voordat je de versie met venster start, anders zijn poort en audio al bezet.
+
 ## Bekende beperkingen
 
 - Audio init mislukt op systemen zonder audio apparaten (servers) — gebruik een USB audio adapter of virtueel audio apparaat

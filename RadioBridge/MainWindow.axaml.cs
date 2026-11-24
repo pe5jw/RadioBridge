@@ -126,6 +126,15 @@ public partial class MainWindow : Window
         LoadSettings();
         UpdateUI();
         HookSettingsSave();
+
+        // --startserver / --startclient: modus forceren en meteen verbinden
+        if (Program.AutoStart is { } mode)
+        {
+            bool srv = mode == StartMode.Server;
+            _rbServer.IsChecked = srv;
+            _rbClient.IsChecked = !srv;
+            Opened += (_, _) => OnConnectClick(null, null!);
+        }
     }
 
     // ── Build UI ──────────────────────────────────────────────────────────────
