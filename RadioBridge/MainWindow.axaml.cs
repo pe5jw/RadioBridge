@@ -108,7 +108,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         // Window properties — set directly, no XAML loader needed
-        Title      = "RadioBridge — Audio over netwerk v0.9";
+        Title      = $"RadioBridge {Program.Version} — Audio over netwerk";
         Width      = 1300;
         Height     = 760;
         MinWidth   = 960;
@@ -573,9 +573,12 @@ public partial class MainWindow : Window
 
     private void OnFirewallClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        int port = (int)(_nudPort.Value ?? 5000);
-        try { FirewallHelper.OpenPort(port); AppendLog($"Firewall: poort {port} TCP geopend."); }
-        catch (Exception ex)               { AppendLog($"Firewall mislukt: {ex.Message}"); }
+        // Audiopoort + TCP-poorten van ingeschakelde seriële bruggen (alleen relevant op de server)
+        var ports = new List<int> { (int)(_nudPort.Value ?? 5000) };
+        if (_chkPort1.IsChecked == true) ports.Add((int)(_nudPort1Tcp.Value ?? 5001));
+        if (_chkPort2.IsChecked == true) ports.Add((int)(_nudPort2Tcp.Value ?? 5002));
+        try   { FirewallHelper.OpenPorts(ports.ToArray()); AppendLog($"Firewall: TCP {string.Join(", ", ports)} geopend."); }
+        catch (Exception ex) { AppendLog($"Firewall mislukt: {ex.Message}"); }
     }
 
     private void OnClientDisconnected()

@@ -102,7 +102,7 @@ public class BridgeConfig
     public SerialPortConfig Port2   { get; set; } = new();
 }
 
-// ── AudioEngine (v0.9 — miniaudio cross-platform) ────────────────────────────
+// ── AudioEngine (miniaudio cross-platform) ──────────────────────────────────
 
 public class AudioEngine : IDisposable
 {

@@ -1,46 +1,77 @@
 name: Build & release
 
-# Bouwt RadioBridge voor Windows x64 en Linux x64 en zet de zips in de
-# GitHub release (zelfde bestanden als build-release.ps1 lokaal maakte).
+# Twee soorten builds:
+#   - tag v1.2.3 gepusht  → stabiele release "v1.2.3" (dit krijgen testers standaard)
+#   - push naar main       → voorlopige release "dev" wordt vervangen door de nieuwste build
+#
+# Bestandsnamen zijn vast (RadioBridge-win-x64.zip etc.), zodat
+#   https://github.com/pe5jw/RadioBridge/releases/latest/download/RadioBridge-win-x64.zip
+# altijd naar de nieuwste stabiele versie wijst.
 on:
   push:
     branches: [main]
-    paths:
+    tags: ["v*"]
+    paths:                  # geldt alleen voor branch-pushes, niet voor tags
       - "RadioBridge/**"
       - "native/**"
       - ".github/workflows/build-release.yml"
-  workflow_dispatch:        # handmatig starten via tabblad Actions
+  workflow_dispatch:        # handmatig starten via tabblad Actions (bouwt dev)
 
 env:
-  RELEASE_TAG: v0.9   # niet VERSION noemen: MSBuild leest die als $(Version)
   DOTNET_VERSION: "10.0.x"
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 permissions:
-  contents: write           # nodig om release-assets te uploaden
+  contents: write           # release aanmaken / bestanden uploaden
 
 concurrency:
-  group: release
-  cancel-in-progress: true  # nieuwe push → vorige build afbreken
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}   # nieuwe push → vorige dev-build afbreken
 
 jobs:
+  # ── Versie bepalen ──────────────────────────────────────────────────────────
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      channel: ${{ steps.v.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            channel=release
+            base=$(grep -oP '(?<=<Version>)[^<]+' RadioBridge/RadioBridge.csproj)
+            if [[ "$version" != "$base" ]]; then
+              echo "::warning::Tag $GITHUB_REF_NAME wijkt af van <Version>$base</Version> in RadioBridge.csproj — tag wint"
+            fi
+          else
+            base=$(grep -oP '(?<=<Version>)[^<]+' RadioBridge/RadioBridge.csproj)
+            version="${base}-dev.${GITHUB_RUN_NUMBER}"
+            channel=dev
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "RadioBridge **$version** ($channel)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Windows x64 ─────────────────────────────────────────────────────────────
   windows:
+    needs: meta
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Eigen installatiemap: niet mengen met de voorgeïnstalleerde .NET 11
-      # (daarop faalde NuGet restore met "Failed to load prune package data").
+      # Eigen installatiemap + global.json: niet mengen met de voorgeïnstalleerde SDK's
       - uses: actions/setup-dotnet@v4
         id: dotnet
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-      # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
       - name: SDK vastzetten
-        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --info | head -20
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force
 
       # miniaudio shim → native/win-x64/radiobridge_audio.dll
       - uses: ilammy/msvc-dev-cmd@v1
@@ -53,68 +84,88 @@ jobs:
           cl.exe /nologo /O2 /LD /Inative native\radiobridge_audio.c /Fe:native\win-x64\radiobridge_audio.dll /Fo:native\win-x64\
           if errorlevel 1 exit /b 1
           del native\win-x64\*.obj native\win-x64\*.lib native\win-x64\*.exp 2>nul
-          dir native\win-x64
 
       - name: Publish win-x64
-        run: dotnet publish RadioBridge -r win-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
+        run: dotnet publish RadioBridge -r win-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false /p:Version=${{ needs.meta.outputs.version }}
 
       - name: Zippen
         shell: pwsh
         run: |
           if (-not (Test-Path out/RadioBridge/radiobridge_audio.dll)) { throw "radiobridge_audio.dll ontbreekt in output" }
-          Compress-Archive -Path out/RadioBridge -DestinationPath "RadioBridge-$env:RELEASE_TAG-win-x64.zip"
+          Compress-Archive -Path out/RadioBridge -DestinationPath RadioBridge-win-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: win-x64
-          path: RadioBridge-${{ env.RELEASE_TAG }}-win-x64.zip
+          path: RadioBridge-win-x64.zip
 
+  # ── Linux x64 + arm64 (Raspberry Pi 4/5) ────────────────────────────────────
   linux:
+    needs: meta
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rid: [linux-x64, linux-arm64]
     steps:
       - uses: actions/checkout@v4
 
-      # Eigen installatiemap: niet mengen met de voorgeïnstalleerde .NET 11
-      # (daarop faalde NuGet restore met "Failed to load prune package data").
       - uses: actions/setup-dotnet@v4
         id: dotnet
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-      # Runner heeft ook nieuwere SDK's; pin op de geïnstalleerde .NET 10 SDK
       - name: SDK vastzetten
-        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force && dotnet --info | head -20
+        run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }} --force
 
-      - name: Publish linux-x64
-        run: dotnet publish RadioBridge -r linux-x64 --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false
+      - name: Publish ${{ matrix.rid }}
+        run: dotnet publish RadioBridge -r ${{ matrix.rid }} --self-contained -c Release -o out/RadioBridge /p:PublishSingleFile=false /p:Version=${{ needs.meta.outputs.version }}
 
       - name: Zippen (met execute-bits)
         run: |
           test -f out/RadioBridge/radiobridge_audio.so || { echo "radiobridge_audio.so ontbreekt"; exit 1; }
           chmod +x out/RadioBridge/RadioBridge
-          cd out && zip -qr "../RadioBridge-${RELEASE_TAG}-linux-x64.zip" RadioBridge
+          cd out && zip -qr "../RadioBridge-${{ matrix.rid }}.zip" RadioBridge
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-x64
-          path: RadioBridge-${{ env.RELEASE_TAG }}-linux-x64.zip
+          name: ${{ matrix.rid }}
+          path: RadioBridge-${{ matrix.rid }}.zip
 
+  # ── Release ─────────────────────────────────────────────────────────────────
   release:
-    needs: [windows, linux]
+    needs: [meta, windows, linux]
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION:  ${{ needs.meta.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          path: assets
           merge-multiple: true
 
-      - name: Uploaden naar release ${{ env.RELEASE_TAG }}
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Stabiele release
+        if: needs.meta.outputs.channel == 'release'
         run: |
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "RadioBridge $RELEASE_TAG" --notes "RadioBridge $RELEASE_TAG"
-          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            "RadioBridge-${RELEASE_TAG}-win-x64.zip" \
-            "RadioBridge-${RELEASE_TAG}-linux-x64.zip"
-          echo "Build ${GITHUB_SHA::7} geüpload naar $RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          tag="$GITHUB_REF_NAME"
+          notes=".github/release-notes/$tag.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" assets/*.zip --clobber
+          else
+            if [[ -f "$notes" ]]; then opts=(--notes-file "$notes"); else opts=(--generate-notes); fi
+            gh release create "$tag" assets/*.zip --verify-tag --latest \
+              --title "RadioBridge $VERSION" "${opts[@]}"
+          fi
+          echo "Release $tag gepubliceerd" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dev-release vervangen
+        if: needs.meta.outputs.channel == 'dev'
+        run: |
+          gh release delete dev --cleanup-tag --yes 2>/dev/null || true
+          gh release create dev assets/*.zip --prerelease --latest=false \
+            --target "$GITHUB_SHA" \
+            --title "Ontwikkelversie $VERSION" \
+            --notes "Automatische build van \`main\` (commit ${GITHUB_SHA::7}). Niet getest — gebruik voor normaal gebruik de nieuwste stabiele release."
+          echo "Dev-release $VERSION bijgewerkt" >> "$GITHUB_STEP_SUMMARY"

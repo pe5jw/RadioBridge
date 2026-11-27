@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -12,55 +13,48 @@ namespace RadioBridge;
 public static class FirewallHelper
 {
     /// <summary>
-    /// Open één TCP poort in de firewall.
+    /// Open één of meer TCP-poorten in de firewall (audio + seriële bruggen).
     /// Gooit een Exception als het mislukt (vang op in MainWindow).
     /// </summary>
-    public static void OpenPort(int port)
+    public static void OpenPorts(params int[] ports)
     {
+        ports = ports.Where(p => p > 0).Distinct().OrderBy(p => p).ToArray();
+        if (ports.Length == 0) return;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            OpenPortWindows(port);
+            OpenPortsWindows(ports);
         else
-            OpenPortLinux(port);
+            OpenPortsLinux(ports);
     }
 
-    private static void OpenPortWindows(int port)
+    private static void OpenPortsWindows(int[] ports)
     {
-        string ruleName = $"RadioBridge TCP {port}";
+        const string ruleName = "RadioBridge";
+        string list = string.Join(",", ports);
 
-        // Verwijder bestaande regel (negeer fouten)
-        RunCommand("netsh",
-            $"advfirewall firewall delete rule name=\"{ruleName}\"",
-            elevate: true);
+        // Eén verhoogde cmd: oude regel weg + nieuwe regel → maar één UAC-vraag
+        string cmd =
+            $"/c netsh advfirewall firewall delete rule name=\"{ruleName}\" >nul 2>&1 & " +
+            $"netsh advfirewall firewall add rule name=\"{ruleName}\" " +
+            $"dir=in action=allow protocol=TCP localport={list} " +
+            $"description=\"RadioBridge audio + serieel\"";
 
-        // Voeg nieuwe regel toe
-        int exit = RunCommand("netsh",
-            $"advfirewall firewall add rule name=\"{ruleName}\" " +
-            $"dir=in action=allow protocol=TCP localport={port} " +
-            $"description=\"RadioBridge audio bridge\"",
-            elevate: true);
-
+        int exit = RunCommand("cmd.exe", cmd, elevate: true);
         if (exit != 0)
             throw new Exception(
                 $"netsh mislukt (exit {exit}). Probeer als administrator uit te voeren.");
     }
 
-    private static void OpenPortLinux(int port)
+    private static void OpenPortsLinux(int[] ports)
     {
-        // Probeer ufw (Ubuntu/Debian)
-        int exit = RunCommand("ufw", $"allow {port}/tcp", elevate: false);
-        if (exit == 0) return;
+        // Probeer ufw (Ubuntu/Debian), anders iptables
+        bool ok = ports.All(p => RunCommand("ufw", $"allow {p}/tcp", elevate: false) == 0)
+               || ports.All(p => RunCommand("iptables", $"-A INPUT -p tcp --dport {p} -j ACCEPT", elevate: false) == 0);
+        if (ok) return;
 
-        // Probeer iptables als fallback
-        exit = RunCommand("iptables",
-            $"-A INPUT -p tcp --dport {port} -j ACCEPT", elevate: false);
-        if (exit == 0) return;
-
-        // Geef de handmatige commando's terug als hint
+        var ufw = string.Join("\n", ports.Select(p => $"  sudo ufw allow {p}/tcp"));
         throw new Exception(
-            $"Geen automatische firewall tool gevonden.\n" +
-            $"Voer handmatig uit:\n" +
-            $"  sudo ufw allow {port}/tcp\n" +
-            $"  of: sudo iptables -A INPUT -p tcp --dport {port} -j ACCEPT");
+            "Kon de firewall niet automatisch aanpassen (root nodig of geen ufw/iptables).\n" +
+            "Voer handmatig uit:\n" + ufw);
     }
 
     private static int RunCommand(string exe, string args, bool elevate)

@@ -9,15 +9,28 @@ internal static class Program
     /// <summary>Gezet door --startserver / --startclient: direct verbinden met de opgeslagen instellingen.</summary>
     public static StartMode? AutoStart { get; private set; }
 
+    /// <summary>Versie zoals gebouwd, bijv. "1.0.0" of "1.0.1-dev.42" (zonder build-metadata).</summary>
+    public static string Version { get; } =
+        (System.Reflection.Assembly.GetExecutingAssembly()
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .FirstOrDefault() as System.Reflection.AssemblyInformationalVersionAttribute)?
+            .InformationalVersion.Split('+')[0] ?? "?";
+
     [STAThread]
     public static int Main(string[] args)
     {
         bool Has(string a) => args.Any(x => string.Equals(x, a, StringComparison.OrdinalIgnoreCase));
 
+        if (Has("--version") || Has("-v"))
+        {
+            Console.WriteLine($"RadioBridge {Version}");
+            return 0;
+        }
+
         if (Has("--help") || Has("-h") || Has("/?"))
         {
             Console.WriteLine("""
-                RadioBridge — audio + serieel over netwerk
+                RadioBridge {VERSION} — audio + serieel over netwerk
 
                 Gebruik: RadioBridge [opties]
 
@@ -25,10 +38,11 @@ internal static class Program
                   --startclient   start direct als client met de laatst opgeslagen instellingen
                   --headless      zonder venster draaien (alleen samen met --startserver of --startclient);
                                   logt naar de console, stoppen met Ctrl+C of systemctl stop
+                  --version       versienummer tonen
                   --help          deze uitleg
 
                 Instellingen worden bewaard in:
-                """ + "  " + AppSettings.FilePath);
+                """.Replace("{VERSION}", Version) + "  " + AppSettings.FilePath);
             return 0;
         }
 
@@ -37,7 +51,7 @@ internal static class Program
         bool headless    = Has("--headless");
 
         foreach (var a in args.Where(a => a.StartsWith('-') &&
-                     !new[] { "--startserver", "--startclient", "--headless" }.Contains(a, StringComparer.OrdinalIgnoreCase)))
+                     !new[] { "--startserver", "--startclient", "--headless", "--version", "-v" }.Contains(a, StringComparer.OrdinalIgnoreCase)))
             Console.Error.WriteLine($"Onbekende optie genegeerd: {a}  (zie --help)");
 
         if (startServer && startClient)

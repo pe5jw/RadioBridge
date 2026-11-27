@@ -16,7 +16,7 @@ internal static class Headless
     public static int Run(bool server)
     {
         var st = AppSettings.Load();
-        Log($"RadioBridge headless — {(server ? "server" : "client")}");
+        Log($"RadioBridge {Program.Version} headless — {(server ? "server" : "client")}");
         Log($"Instellingen: {AppSettings.FilePath}{(File.Exists(AppSettings.FilePath) ? "" : "  (niet gevonden — standaardwaarden)")}");
 
         using var cts = new CancellationTokenSource();

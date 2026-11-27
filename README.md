@@ -2,13 +2,15 @@
 
 **Audio + serieel over TCP — remote radio bediening**
 
-RadioBridge verbindt twee computers via een netwerk (LAN of internet) zodat je een radio op afstand kunt bedienen. Je hoort de radio alsof je er naast zit, én je kunt hem aansturen via CAT en PTT — alsof de USB-kabel gewoon doorloopt naar de andere kant.
+RadioBridge verbindt twee computers via het netwerk zodat je een radio op afstand kunt bedienen. Je hoort de radio alsof je ernaast zit, en je stuurt hem aan via CAT/PTT — alsof de USB-kabel gewoon doorloopt naar de andere kant.
 
 ```
-[Radio] ── USB ── [Server-PC]  ══ TCP ══  [Client-PC] ── [Jij / Logger]
-                  microfoon/speaker         koptelefoon/microfoon
-                  CAT / PTT poort           virtuele COM-poort
+[Radio] ── USB ── [Server]  ══ TCP ══  [Client] ── [Jij / logger / CAT-app]
+                  audio in/uit          koptelefoon / microfoon
+                  COM-poort(en)         virtuele COM-poort(en)
 ```
+
+De seriële brug is **protocol-onafhankelijk**: RadioBridge stuurt alleen bytes door. Elke transceiver met een CAT-poort en elke besturingsapp met een COM-poort werkt (DXLab Commander, flrig, PCC950, loggers…), net als andere apparaten met een seriële poort.
 
 ---
 
@@ -16,250 +18,94 @@ RadioBridge verbindt twee computers via een netwerk (LAN of internet) zodat je e
 
 | Functie | Details |
 |---|---|
-| **2-weg audio** | Volledige duplex, 48 kHz / 16-bit PCM |
-| **Opus compressie** | Configureerbaar (2,4 – 510 kbps), presets voor SSB/FM/CW |
-| **PCM modus** | Ruwe audio zonder compressie, minimale latency |
-| **Ruisonderdrukking** | RNNoise neuraal filter op capturekanaal |
-| **Serieel over TCP** | CAT- en PTT-poort als virtuele COM op de client |
-| **Firewall helper** | Poort 5000 TCP automatisch openen (Windows: netsh, Linux: ufw) |
-| **Cross-platform** | Windows x64, Linux x64, Linux arm64 (Raspberry Pi 4/5) |
-
----
-
-## Architectuur
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  RadioBridge.exe / RadioBridge                              │
-│                                                             │
-│  MainWindow (Avalonia UI)                                   │
-│       │                                                     │
-│       ├── AudioEngine.cs          TCP audio stream          │
-│       │      └── MiniAudioEngine  P/Invoke → native .so/.dll│
-│       │              └── miniaudio (C, full-duplex)         │
-│       │                                                     │
-│       ├── OpusCodec.cs            Concentus (pure C#)       │
-│       ├── NoiseFilter.cs          RNNoise.Net                │
-│       └── SerialBridge.cs         System.IO.Ports + TCP     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Native audio laag** — `radiobridge_audio.c` is een dunne C-shim bovenop [miniaudio](https://miniaud.io) (single-header, geen externe dependencies). De shim wordt als `.dll` (Windows) of `.so` (Linux) naast de EXE geplaatst en aangeroepen via P/Invoke.
-
----
-
-## Ontwikkelgeschiedenis
-
-| Versie | Wat veranderd |
-|---|---|
-| **v0.1 – v0.3** | Proof of concept: WinForms UI, NAudio voor audio, ruwe PCM over TCP |
-| **v0.4 – v0.6** | Opus compressie toegevoegd (Concentus), presets voor SSB/FM/CW, serieel bridging |
-| **v0.7** | RNNoise ruisfilter, firewall helper, betere buffering |
-| **v0.8** | NAudio vervangen door miniaudio C-shim (native full-duplex, lagere latency) |
-| **v0.9** | WinForms vervangen door Avalonia 11 → cross-platform; Linux x64 + arm64 builds |
-| **v1.0 (gepland)** | Kant-en-klare Raspberry Pi release, automatische latency-compensatie |
-
----
-
-## Zelf bouwen
-
-### Vereisten
-
-| Component | Versie | Waarvoor |
-|---|---|---|
-| [.NET SDK](https://dotnet.microsoft.com/download) | 10.0 | C# applicatie builden |
-| [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) of MinGW/GCC | — | Native audio DLL compileren (Windows) |
-| GCC | — | Native audio SO compileren (Linux) |
-
-### 1 — Native audio library bouwen
-
-**Windows** (vanuit `native/`):
-```bat
-build_windows.bat
-```
-Detecteert automatisch MSVC (`cl.exe`), MinGW (`gcc`) of LLVM (`clang`).
-Output: `native/win-x64/radiobridge_audio.dll`
-
-**Linux x64** (vanuit `native/`):
-```bash
-gcc -O2 -shared -fPIC -I. radiobridge_audio.c \
-    -o linux-x64/radiobridge_audio.so \
-    -ldl -lpthread -lm
-```
-
-**Linux arm64** (cross-compile vanuit Linux x64, of native op Pi):
-```bash
-# Cross-compile op Ubuntu/Debian x64:
-sudo apt install gcc-aarch64-linux-gnu
-
-aarch64-linux-gnu-gcc -O2 -shared -fPIC -I. radiobridge_audio.c \
-    -o linux-arm64/radiobridge_audio.so \
-    -ldl -lpthread -lm
-```
-
-### 2 — C# applicatie bouwen
-
-```bash
-cd RadioBridge
-
-# Debug build (snel testen):
-dotnet build
-
-# Release publish voor Windows:
-dotnet publish -r win-x64 --self-contained -c Release -o dist/win-x64
-
-# Release publish voor Linux x64:
-dotnet publish -r linux-x64 --self-contained -c Release -o dist/linux-x64
-
-# Release publish voor Linux arm64 (Raspberry Pi 4/5):
-dotnet publish -r linux-arm64 --self-contained -c Release -o dist/linux-arm64
-```
-
-> **Let op**: de native `.dll` / `.so` wordt automatisch naast de EXE geplaatst via de `CopyToOutputDirectory`-instelling in het `.csproj`, mits de juiste `-r` RID is opgegeven.
-
-### 3 — Zip voor distributie
-
-```powershell
-# Windows
-Compress-Archive dist/win-x64/* RadioBridge-v0.9-win-x64.zip
-
-# Linux (vanuit Linux)
-cd dist/linux-x64 && zip -r ../../RadioBridge-v0.9-linux-x64.zip .
-```
+| **2-weg audio** | Full-duplex, PCM of Opus; presets van 6 kbps tot 1,5 Mbps, lage-latency presets met 10 ms blokken |
+| **Ruisfilter** | Noise gate / RNNoise op het opnamekanaal |
+| **2 seriële poorten** | Server: echte COM-poort of `/dev/ttyUSB*`. Client: virtuele poort (com0com op Windows, automatisch een PTY op Linux) |
+| **Instellingen onthouden** | Alles wat je instelt komt terug na een herstart |
+| **Zonder venster** | `--startserver --headless`, bijv. als systemd-dienst |
+| **Firewall-knop** | Opent de audiopoort en de TCP-poorten van de seriële bruggen |
+| **Platforms** | Windows x64, Linux x64, Raspberry Pi 4/5 (arm64, ⚠️ nog niet getest) |
 
 ---
 
 ## Installatie
 
+Download de nieuwste versie van de [Releases](https://github.com/pe5jw/RadioBridge/releases/latest)-pagina. Geen .NET-installatie nodig.
+
+| Platform | Bestand |
+|---|---|
+| Windows x64 | `RadioBridge-win-x64.zip` |
+| Linux x64 | `RadioBridge-linux-x64.zip` |
+| Raspberry Pi 4/5 (64-bit OS) | `RadioBridge-linux-arm64.zip` — ⚠️ nog niet getest |
+
 ### Windows
 
-1. Download `RadioBridge-v0.9-win-x64.zip` van de [Releases](https://github.com/pe5jw/RadioBridge/releases) pagina
-2. Pak uit naar een map naar keuze, bijv. `C:\ham\RadioBridge\`
-3. Dubbelklik `RadioBridge.exe`
-4. Eerste keer: klik **🔥 Firewall** om poort 5000 TCP automatisch te openen
+1. Pak `RadioBridge-win-x64.zip` uit, bijv. naar `C:\ham\` — je krijgt een map `RadioBridge`
+2. Start `RadioBridge\RadioBridge.exe`
+3. **Als client met CAT**: installeer [com0com](https://sourceforge.net/projects/com0com/) voor een virtueel COM-paar (bijv. COM7 ↔ COM8). RadioBridge gebruikt de ene kant, je CAT-app de andere.
 
-> Geen .NET installatie nodig — alles zit ingebakken in de EXE.
+### Linux x64 en Raspberry Pi
 
----
-
-### Linux (x64 — PC / laptop)
-
-**Automatisch via installatiescript:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pe5jw/RadioBridge/main/install.sh | bash
 ```
 
-Installeert naar `~/.local/share/radiobridge/` en maakt automatisch:
-- Een snelkoppeling in het applicatiemenu
-- Een snelkoppeling op het bureaublad
-- Een `radiobridge` commando in de terminal
+Installeert naar `~/RadioBridge`, met een `radiobridge` commando en een snelkoppeling in het applicatiemenu. Kiest automatisch x64 of arm64.
 
-**Handmatig:**
+Voor de seriële poort moet je in de groep `dialout` zitten:
 ```bash
-wget https://github.com/pe5jw/RadioBridge/releases/download/v0.9/RadioBridge-v0.9-linux-x64.zip
-unzip RadioBridge-v0.9-linux-x64.zip -d ~/radiobridge
-chmod +x ~/radiobridge/RadioBridge
-~/radiobridge/RadioBridge
+sudo usermod -aG dialout $USER   # daarna opnieuw inloggen
 ```
 
-> Vereist een X11 of Wayland desktop. Geen .NET installatie nodig.
+### Updaten
 
----
+| | Stabiele versie | Ontwikkelversie (laatste build van `main`) |
+|---|---|---|
+| Linux | `~/RadioBridge/update.sh` | `~/RadioBridge/update.sh --dev` |
+| Windows (vanuit de repo) | `.\update.ps1` | `.\update.ps1 -Dev` |
 
-### Raspberry Pi (arm64 — Pi 4 / Pi 5)
-
-> **Pi 4 en Pi 5** draaien een 64-bit OS (aarch64) — gebruik de `linux-arm64` build.  
-> **Pi 3** draait standaard 32-bit — gebruik de `linux-arm` build (nog niet beschikbaar; zie hieronder).
-
-#### Optie A — Kant-en-klare arm64 build (aanbevolen)
-
-Zodra de `linux-arm64` release beschikbaar is:
-```bash
-wget https://github.com/pe5jw/RadioBridge/releases/download/v0.9/RadioBridge-v0.9-linux-arm64.zip
-unzip RadioBridge-v0.9-linux-arm64.zip -d ~/radiobridge
-chmod +x ~/radiobridge/RadioBridge
-~/radiobridge/RadioBridge
-```
-
-#### Optie B — Zelf compileren op de Pi
-
-```bash
-# 1. .NET 10 installeren op de Pi
-curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
-echo 'export PATH=$PATH:~/.dotnet' >> ~/.bashrc
-source ~/.bashrc
-
-# 2. Repo clonen
-git clone https://github.com/pe5jw/RadioBridge.git
-cd RadioBridge
-
-# 3. Native audio library compileren (native op de Pi)
-cd native
-gcc -O2 -shared -fPIC -I. radiobridge_audio.c \
-    -o linux-arm64/radiobridge_audio.so \
-    -ldl -lpthread -lm
-
-# 4. App builden
-cd ../RadioBridge
-dotnet publish -r linux-arm64 --self-contained -c Release -o ~/radiobridge
-cp ../native/linux-arm64/radiobridge_audio.so ~/radiobridge/
-
-# 5. Starten
-~/radiobridge/RadioBridge
-```
-
-> Op een Pi 3 (32-bit OS): vervang `linux-arm64` door `linux-arm` in stap 3 en 4.
+Voeg `--start` / `-Start` toe om RadioBridge daarna meteen te starten.
 
 ---
 
 ## Gebruik
 
-### Server instellen (bij de radio)
+### Server (bij de radio)
 
-1. Selecteer **Server** modus
-2. Kies het **capture** apparaat (microfoon / radio-audio in)
-3. Kies het **playback** apparaat (speaker / radio-audio uit)
-4. Stel de seriële poort in voor CAT/PTT (optioneel)
-5. Klik **Verbinden** — wacht op een client
+1. Kies **Server**
+2. Kies het **opname**-apparaat (audio uit de radio) en **afspeel**-apparaat (audio naar de radio)
+3. Schakel **Poort 1** in: COM-poort / `/dev/ttyUSB0` van de radio, baud gelijk aan de radio, TCP-poort (standaard 5001)
+4. Klik **🔥 Firewall** (eenmalig)
+5. Klik **Server starten**
 
-### Client instellen (jouw werkplek)
+### Client (jouw werkplek)
 
-1. Selecteer **Client** modus
-2. Vul het IP-adres van de server in
-3. Kies je lokale audio apparaten
-4. Klik **Verbinden**
+1. Kies **Client**, vul het IP-adres van de server in
+2. Kies je audio-apparaten en een codec-preset
+3. Windows: klik **com0com detecteren** en kies het paar voor Poort 1. Je CAT-app verbindt met de *andere* kant (het log zegt welke)
+4. Linux: RadioBridge maakt zelf een virtuele poort (`/dev/pts/N`) — het log zegt welke
+5. Klik **Verbinden**
 
-### Presets
-
-| Preset | Bitrate | Geschikt voor |
-|---|---|---|
-| SSB Smal | 16 kbps | HF SSB, smalle bandbreedte |
-| SSB Breed | 32 kbps | HF SSB, betere kwaliteit |
-| FM | 64 kbps | VHF/UHF FM |
-| Hifi | 128 kbps | Breed spectrum ontvangst |
-| PCM | — | Geen compressie, laagste latency |
-
----
+De codec kies je op de client; de server neemt hem automatisch over.
 
 ### Opstartparameters
 
 | Parameter | Werking |
-|-----------|---------|
+|---|---|
 | `--startserver` | Start direct als server met de laatst opgeslagen instellingen |
 | `--startclient` | Start direct als client met de laatst opgeslagen instellingen |
-| `--headless` | Zonder venster, alleen samen met `--startserver` of `--startclient`. Logt naar de console. |
+| `--headless` | Zonder venster, alleen samen met `--startserver` of `--startclient`. Logt naar de console |
+| `--version` | Versienummer |
 | `--help` | Uitleg |
 
-Instellingen worden automatisch bewaard zodra je ze in het venster wijzigt:
+Instellingen worden automatisch bewaard zodra je ze wijzigt:
 
 - Windows: `%APPDATA%\RadioBridge\settings.json`
 - Linux: `~/.config/RadioBridge/settings.json`
 
-Stel dus eerst alles één keer in met het venster; daarna kan RadioBridge zonder venster draaien.
-Een server zonder venster herstart zichzelf na het verbreken van een client; een client zonder
-venster probeert elke 5 seconden opnieuw te verbinden.
+Stel dus eerst alles één keer in met het venster; daarna kan RadioBridge zonder venster draaien. Een server zonder venster luistert opnieuw na het verbreken van een client; een client zonder venster probeert elke 5 seconden opnieuw te verbinden.
 
-#### Linux: server automatisch starten bij het opstarten (systemd)
+### Linux: server automatisch starten (systemd)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -283,15 +129,81 @@ loginctl enable-linger $USER          # ook starten zonder dat je inlogt
 journalctl --user -u radiobridge -f   # log bekijken
 ```
 
-Als gebruikersdienst draait RadioBridge met jouw audio-sessie (PulseAudio/PipeWire) en je
-`dialout`-rechten voor de seriële poort. Stop de dienst (`systemctl --user stop radiobridge`)
-voordat je de versie met venster start, anders zijn poort en audio al bezet.
+Stop de dienst (`systemctl --user stop radiobridge`) voordat je de versie met venster start, anders zijn poorten en audio al bezet.
+
+### Tips
+
+- **Via RDP / zwakke computer**: minimaliseer het venster — dan tekent RadioBridge niets bij en kost het veel minder CPU. VU-meters kun je ook uitzetten.
+- **CAT werkt niet?** Controleer baud en poort op de server, en of de firewall de TCP-poort van de seriële brug (5001) doorlaat.
+
+---
 
 ## Bekende beperkingen
 
-- Audio init mislukt op systemen zonder audio apparaten (servers) — gebruik een USB audio adapter of virtueel audio apparaat
-- Pi 3 (32-bit) vereist handmatige compilatie met `linux-arm` RID
-- `Tmds.DBus.Protocol` security warning is een indirecte Avalonia dependency — niet functioneel
+- Raspberry Pi (arm64): wordt gebouwd, maar is nog niet getest
+- Windows-client heeft com0com nodig voor een virtuele COM-poort
+- **Geen wachtwoord of versleuteling** — gebruik RadioBridge op je eigen netwerk of via een VPN, zet de poorten niet direct open op internet
+- Eén client tegelijk
+- `Tmds.DBus.Protocol` security-waarschuwing bij het bouwen komt van een indirecte Avalonia-dependency
+
+Problemen of ervaringen graag via [GitHub issues](https://github.com/pe5jw/RadioBridge/issues): vermeld platform, radio, besturingsapp en het log.
+
+---
+
+## Architectuur
+
+```
+RadioBridge (Avalonia UI of --headless)
+ ├── AudioEngine          TCP audio-stream, presets, gain, VU
+ │    └── MiniAudioEngine  P/Invoke → radiobridge_audio.dll/.so (miniaudio, full-duplex)
+ ├── OpusCodec            Concentus (pure C#)
+ ├── NoiseFilter          noise gate / RNNoise.Net
+ ├── SerialBridge         server: COM-poort ↔ TCP
+ ├── VirtualSerialBridge  client: com0com / PTY ↔ TCP
+ └── AppSettings          settings.json
+```
+
+---
+
+## Zelf bouwen
+
+Releases worden automatisch gebouwd door GitHub Actions (`.github/workflows/build-release.yml`):
+
+- **push naar `main`** → release `dev` wordt vervangen door de nieuwste build
+- **tag `vX.Y.Z` pushen** → stabiele release, met notes uit `.github/release-notes/vX.Y.Z.md`
+
+Nieuwe versie uitbrengen: zet `<Version>` in `RadioBridge/RadioBridge.csproj`, schrijf de release-notes, en:
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+Lokaal bouwen (vereist [.NET 10 SDK](https://dotnet.microsoft.com/download)):
+```bash
+dotnet publish RadioBridge -r win-x64     --self-contained -c Release -o dist/win-x64
+dotnet publish RadioBridge -r linux-x64   --self-contained -c Release -o dist/linux-x64
+dotnet publish RadioBridge -r linux-arm64 --self-contained -c Release -o dist/linux-arm64
+```
+
+De native audiobibliotheek staat voorgebouwd in `native/`. Opnieuw bouwen:
+```bash
+# Windows (MSVC, MinGW of clang):  native\build_windows.bat
+# Linux x64:
+gcc -O2 -shared -fPIC -Inative native/radiobridge_audio.c -o native/linux-x64/radiobridge_audio.so -ldl -lpthread -lm
+# Linux arm64 (cross-compile):
+aarch64-linux-gnu-gcc -O2 -shared -fPIC -Inative native/radiobridge_audio.c -o native/linux-arm64/radiobridge_audio.so -ldl -lpthread -lm
+```
+
+---
+
+## Versiegeschiedenis
+
+| Versie | Wat veranderd |
+|---|---|
+| v0.1 – v0.6 | Proof of concept: WinForms, NAudio, PCM over TCP; daarna Opus, presets en seriële brug |
+| v0.7 | RNNoise ruisfilter, firewall helper, betere buffering |
+| v0.8 | NAudio vervangen door miniaudio C-shim |
+| v0.9 | WinForms vervangen door Avalonia 11 → cross-platform |
+| **v1.0.0** | Betrouwbare seriële brug, instellingen onthouden, `--headless`, minder CPU, Raspberry Pi build (ongetest), automatische builds |
 
 ---
 
@@ -300,7 +212,7 @@ voordat je de versie met venster start, anders zijn poort en audio al bezet.
 MIT — zie [LICENSE](LICENSE)
 
 Gebruikt:
-- [miniaudio](https://miniaud.io) — MIT, David Reid
+- [miniaudio](https://miniaud.io) — MIT-0 / public domain, David Reid
 - [Concentus](https://github.com/lostromb/concentus) — BSD, Opus/Xiph.Org
 - [RNNoise.Net](https://github.com/Yellow-Dog-Man/RNNoise.Net) — BSD
 - [Avalonia UI](https://avaloniaui.net) — MIT

@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- v0.9: cross-platform — net10.0 zonder -windows -->
+    <!-- Versie: CI overschrijft dit met de tag (v1.2.3 → 1.2.3) of met een -dev.N suffix -->
+    <Version>1.0.0</Version>
+    <Product>RadioBridge</Product>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
